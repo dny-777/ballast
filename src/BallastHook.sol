@@ -11,6 +11,7 @@ import {BeforeSwapDelta, BeforeSwapDeltaLibrary} from "v4-core/types/BeforeSwapD
 import {SwapParams} from "v4-core/types/PoolOperation.sol";
 import {LPFeeLibrary} from "v4-core/libraries/LPFeeLibrary.sol";
 import {StateLibrary} from "v4-core/libraries/StateLibrary.sol";
+import {SwapMath} from "v4-core/libraries/SwapMath.sol";
 import {Currency, CurrencyLibrary} from "v4-core/types/Currency.sol";
 import {FixedPointMathLib} from "solmate/src/utils/FixedPointMathLib.sol";
 
@@ -110,6 +111,19 @@ contract BallastHook is BaseHook {
     /// @notice Basis-point denominator used throughout this contract.
     uint256 internal constant BPS_DENOMINATOR = 10_000;
 
+    /// @notice Signal 2 fires when a swap's expected price impact exceeds
+    /// this multiple of the pool's own recent baseline impact. Expressed
+    /// as a BPS_DENOMINATOR-scaled multiplier (25000 = 2.5x). Chosen as an
+    /// initial, documented, tunable constant — same "needs real
+    /// backtesting before being treated as final" caveat as
+    /// MAX_DEVIATION_BPS.
+    uint256 public constant EXCESS_MULTIPLIER_BPS = 25_000; // 2.5x baseline
+
+    /// @notice Weight given to a new observation when updating the
+    /// exponential moving average baseline in `afterSwap`, out of
+    /// BPS_DENOMINATOR (1000 = 10%, i.e. roughly a 10-swap-window EMA).
+    uint256 public constant EMA_WEIGHT_BPS = 1000; // 10%
+
     // ─────────────────────────────────────────────────────────────────────
     // Storage
     // ─────────────────────────────────────────────────────────────────────
@@ -153,6 +167,27 @@ contract BallastHook is BaseHook {
     /// whoever initializes the pool. Only this address may configure the
     /// price feed and staleness window for that pool.
     mapping(PoolId poolId => address configurer) public poolConfigurer;
+
+    /// @notice Signal 2's rolling baseline: an exponential moving average
+    /// of this pool's own recent swap price-impact magnitude, in basis
+    /// points. "Unusually large" is judged relative to THIS pool's own
+    /// normal behavior, not a fixed constant — a $10M pool and a $50K pool
+    /// have very different notions of a "large" swap.
+    mapping(PoolId poolId => uint256 avgImpactBps) public baselineImpactBps;
+
+    /// @notice Whether a pool's baseline has ever been set. The very first
+    /// swap on a pool has no prior average to compare against or blend
+    /// with, so we treat it as non-excessive by definition rather than
+    /// (incorrectly) flagging every pool's first swap as toxic.
+    mapping(PoolId poolId => bool isSet) public baselineInitialized;
+
+    /// @notice Handoff value: the price impact `_beforeSwap` computed for
+    /// the swap currently in flight, read back by `_afterSwap` to update
+    /// the baseline EMA. Since `beforeSwap` already computes this
+    /// deterministically from the swap's own parameters (not something
+    /// that needs a real "before vs. after" comparison), reusing that
+    /// value avoids redundant computation.
+    mapping(PoolId poolId => uint256 impactBps) internal _pendingImpactBps;
 
     // ─────────────────────────────────────────────────────────────────────
     // Constructor
@@ -247,38 +282,53 @@ contract BallastHook is BaseHook {
     }
 
     // ─────────────────────────────────────────────────────────────────────
-    // beforeSwap — Signal 1 (this milestone) drives the fee override.
-    // Signal 2 will be folded into `_computeFee` on Days 3-5.
+    // beforeSwap — computes the combined-signal fee and stashes Signal 2's
+    // computed impact for afterSwap to fold into the pool's baseline EMA.
     // ─────────────────────────────────────────────────────────────────────
 
     function _beforeSwap(address, PoolKey calldata key, SwapParams calldata params, bytes calldata)
         internal
-        view
         override
         returns (bytes4, BeforeSwapDelta, uint24)
     {
-        uint24 fee = _computeFee(key, params);
+        PoolId poolId = key.toId();
+        uint24 fee = _computeFee(poolId, key, params);
         uint24 feeWithFlag = fee | LPFeeLibrary.OVERRIDE_FEE_FLAG;
 
         return (this.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, feeWithFlag);
     }
 
     // ─────────────────────────────────────────────────────────────────────
-    // afterSwap — reserved for Days 6-8's donate() release loop and any
-    // Signal-2-related state updates. Currently a no-op passthrough.
-    //
-    // NOTE: intentionally left non-pure even though this stub body doesn't
-    // touch state yet — Days 6-8 adds the donate() release loop and
-    // Signal-2 baseline updates here, both requiring state writes.
+    // afterSwap — folds this swap's Signal 2 impact into the pool's
+    // rolling baseline EMA. donate() release loop still reserved for
+    // Days 6-8.
     // ─────────────────────────────────────────────────────────────────────
 
-    function _afterSwap(address, PoolKey calldata, SwapParams calldata, BalanceDelta, bytes calldata)
+    function _afterSwap(address, PoolKey calldata key, SwapParams calldata, BalanceDelta, bytes calldata)
         internal
         override
         returns (bytes4, int128)
     {
+        PoolId poolId = key.toId();
+        uint256 impact = _pendingImpactBps[poolId];
+
+        if (!baselineInitialized[poolId]) {
+            // First observation for this pool: seed the baseline directly
+            // rather than blending with a meaningless zero starting value.
+            baselineImpactBps[poolId] = impact;
+            baselineInitialized[poolId] = true;
+        } else {
+            // Standard EMA update: newAvg = oldAvg + weight * (new - oldAvg)
+            uint256 oldAvg = baselineImpactBps[poolId];
+            if (impact >= oldAvg) {
+                baselineImpactBps[poolId] = oldAvg + ((impact - oldAvg) * EMA_WEIGHT_BPS) / BPS_DENOMINATOR;
+            } else {
+                baselineImpactBps[poolId] = oldAvg - ((oldAvg - impact) * EMA_WEIGHT_BPS) / BPS_DENOMINATOR;
+            }
+        }
+
         // TODO (Days 6-8): periodic donate() release of pendingReserve back
-        // to in-range LPs, and any Signal-2 baseline/state updates.
+        // to in-range LPs.
         return (this.afterSwap.selector, 0);
     }
 
@@ -287,52 +337,209 @@ contract BallastHook is BaseHook {
     // ─────────────────────────────────────────────────────────────────────
 
     /// @notice Public, read-only preview of the fee `_beforeSwap` would
-    /// charge for a hypothetical swap with the given parameters, without
-    /// actually executing anything. Exists so tests (and later, a demo
-    /// frontend) can inspect and verify the fee logic directly, rather than
-    /// only inferring it indirectly from swap output amounts.
+    /// charge for a hypothetical swap with the given parameters. NOTE: for
+    /// simplicity this preview does not update `_pendingImpactBps` (it
+    /// calls the same underlying computation but through a `view`-only
+    /// path), so it's safe to call repeatedly without side effects, unlike
+    /// a real swap.
     function previewFee(PoolKey calldata key, SwapParams calldata params) external view returns (uint24) {
-        return _computeFee(key, params);
+        return _previewFee(key.toId(), key, params);
     }
 
-    /// @notice Computes the fee to charge for a given swap, based on
-    /// Signal 1 (external price deviation). Signal 2 (structural
-    /// depth/impact check) will be added here on Days 3-5 and combined
-    /// with Signal 1 per the design in our notes: neither signal alone
-    /// reaches `MAX_SURCHARGE_FEE`; both firing together does.
-    function _computeFee(PoolKey calldata key, SwapParams calldata params) internal view returns (uint24) {
+    /// @notice Diagnostic view exposing Signal 2's raw internal values for
+    /// a hypothetical swap, without executing anything. Exists for
+    /// debugging/testing and later demo transparency — lets anyone verify
+    /// exactly what the hook currently considers this pool's baseline and
+    /// this swap's computed impact to be, rather than only seeing the
+    /// final fee.
+    function previewSignal2(PoolKey calldata key, SwapParams calldata params)
+        external
+        view
+        returns (bool isExcessive, uint256 excessRatioX18, uint256 impactBps, uint256 currentBaselineBps)
+    {
         PoolId poolId = key.toId();
+        (isExcessive, excessRatioX18, impactBps) = _signal2(poolId, key, params);
+        currentBaselineBps = baselineImpactBps[poolId];
+    }
+
+    /// @notice Computes the fee for a swap that is actually about to
+    /// execute, combining Signal 1 and Signal 2, and records Signal 2's
+    /// computed impact so `_afterSwap` can update the pool's baseline.
+    function _computeFee(PoolId poolId, PoolKey calldata key, SwapParams calldata params)
+        internal
+        returns (uint24)
+    {
+        (uint24 fee, uint256 impactBps) = _computeFeeAndImpact(poolId, key, params);
+        _pendingImpactBps[poolId] = impactBps;
+        return fee;
+    }
+
+    /// @notice `view`-only counterpart used by `previewFee`, sharing the
+    /// exact same fee logic without touching state.
+    function _previewFee(PoolId poolId, PoolKey calldata key, SwapParams calldata params)
+        internal
+        view
+        returns (uint24)
+    {
+        (uint24 fee,) = _computeFeeAndImpact(poolId, key, params);
+        return fee;
+    }
+
+    /// @notice Core combined fee logic, shared by both the state-writing
+    /// and view-only paths above.
+    ///
+    /// Combination formula (per our documented design): each signal
+    /// contributes a 0..1 normalized "toxicity" score, weighted equally,
+    /// and the fee scales linearly from BASE_FEE to MAX_SURCHARGE_FEE with
+    /// the combined score. Neither signal alone can reach the maximum —
+    /// both firing together is what drives the fee to its ceiling. This
+    /// dual requirement is also the primary defense against either signal
+    /// being cheaply gamed in isolation (Workshop 13's lesson on
+    /// manipulable single-signal fee logic).
+    ///
+    /// Signal 1 (external) additionally distinguishes toxic vs. corrective
+    /// direction; if Signal 1 is clearly corrective and Signal 2 does not
+    /// fire, we pass through the discounted fee rather than applying the
+    /// combined-score formula, since a swap actively fixing the pool's
+    /// price should not be penalized by an unrelated depth signal.
+    function _computeFeeAndImpact(PoolId poolId, PoolKey calldata key, SwapParams calldata params)
+        internal
+        view
+        returns (uint24 fee, uint256 impactBps)
+    {
         IAggregatorV3 feed = priceFeeds[poolId];
 
-        // If no feed has been configured yet for this pool, fall back to
-        // the flat base fee rather than reverting — a pool should still be
-        // usable (at the plain base fee) before/if it's ever configured.
+        // Signal 2 runs regardless of whether an oracle is configured,
+        // since it doesn't depend on one.
+        (bool isExcessive, uint256 excessRatioX18, uint256 rawImpactBps) = _signal2(poolId, key, params);
+        impactBps = rawImpactBps;
+
+        // If no oracle feed has been configured yet for this pool, Signal
+        // 1 cannot run; fall back to Signal-2-only logic rather than
+        // reverting, so a pool remains usable before/if it's configured.
         if (address(feed) == address(0)) {
-            return BASE_FEE;
+            fee = _feeFromSignal2Only(isExcessive, excessRatioX18);
+            return (fee, impactBps);
         }
 
         (bool isToxic, bool isCorrective, uint256 deviationBps) = _signal1(poolId, key, params, feed);
 
-        if (isToxic) {
-            // Linearly scale the surcharge with deviation magnitude, capped
-            // at MAX_DEVIATION_BPS -> MAX_SURCHARGE_FEE. This mirrors the
-            // spirit of Nezlobin's c*Delta scaling (Workshop 7) but is
-            // driven by our own external-deviation signal rather than the
-            // pool's own previous-block tick movement.
-            uint256 cappedDeviation = deviationBps > MAX_DEVIATION_BPS ? MAX_DEVIATION_BPS : deviationBps;
-            uint256 extra = (uint256(MAX_SURCHARGE_FEE - BASE_FEE) * cappedDeviation) / MAX_DEVIATION_BPS;
-            // Safe: extra is bounded above by (MAX_SURCHARGE_FEE - BASE_FEE)
-            // since cappedDeviation <= MAX_DEVIATION_BPS by construction, so
-            // BASE_FEE + extra <= MAX_SURCHARGE_FEE, well within uint24 range.
-            // forge-lint: disable-next-line(unsafe-typecast)
-            return uint24(BASE_FEE + extra);
+        if (isCorrective && !isExcessive) {
+            return (DISCOUNTED_FEE, impactBps);
         }
 
-        if (isCorrective) {
-            return DISCOUNTED_FEE;
+        // Normalize each signal to a 0..1 (fixed-point 1e18) toxicity
+        // score, capped at 1.0.
+        uint256 signal1ScoreX18 = isToxic
+            ? FixedPointMathLib.mulDivDown(
+                deviationBps > MAX_DEVIATION_BPS ? MAX_DEVIATION_BPS : deviationBps, 1e18, MAX_DEVIATION_BPS
+            )
+            : 0;
+
+        uint256 signal2ScoreX18;
+        if (isExcessive) {
+            // MAX_EXCESS_SCORE_RATIO_X18 caps how far past the excess
+            // threshold we keep scaling the score — beyond this, more
+            // excess doesn't push the score higher, it's already at 1.0.
+            uint256 cappedExcess = excessRatioX18 > 2e18 ? 2e18 : excessRatioX18;
+            // excessRatioX18 is impact/baseline; a ratio of
+            // EXCESS_MULTIPLIER_BPS/BPS_DENOMINATOR (2.5x) or more is
+            // treated as a full Signal-2 score.
+            uint256 thresholdX18 = FixedPointMathLib.mulDivDown(EXCESS_MULTIPLIER_BPS, 1e18, BPS_DENOMINATOR);
+            signal2ScoreX18 = cappedExcess >= thresholdX18
+                ? 1e18
+                : FixedPointMathLib.mulDivDown(cappedExcess, 1e18, thresholdX18);
         }
 
-        return BASE_FEE;
+        // Equal-weighted combination, per our documented design.
+        uint256 combinedScoreX18 = (signal1ScoreX18 + signal2ScoreX18) / 2;
+        if (combinedScoreX18 > 1e18) combinedScoreX18 = 1e18;
+
+        uint256 extra =
+            FixedPointMathLib.mulDivDown(uint256(MAX_SURCHARGE_FEE - BASE_FEE), combinedScoreX18, 1e18);
+        // Safe: combinedScoreX18 <= 1e18 by construction, so extra <=
+        // (MAX_SURCHARGE_FEE - BASE_FEE), keeping the sum within uint24.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        fee = uint24(BASE_FEE + extra);
+    }
+
+    /// @notice Fallback fee logic for a pool with no oracle configured yet
+    /// — Signal 2 alone, scaled the same way Signal 1 would contribute on
+    /// its own, so behavior is continuous with the fully-configured case.
+    function _feeFromSignal2Only(bool isExcessive, uint256 excessRatioX18) internal pure returns (uint24) {
+        if (!isExcessive) return BASE_FEE;
+
+        uint256 cappedExcess = excessRatioX18 > 2e18 ? 2e18 : excessRatioX18;
+        uint256 thresholdX18 = FixedPointMathLib.mulDivDown(EXCESS_MULTIPLIER_BPS, 1e18, BPS_DENOMINATOR);
+        uint256 signal2ScoreX18 =
+            cappedExcess >= thresholdX18 ? 1e18 : FixedPointMathLib.mulDivDown(cappedExcess, 1e18, thresholdX18);
+
+        // Signal 2 alone is weighted the same as it would be in
+        // combination (score / 2 of the max range), consistent with the
+        // "neither signal alone reaches the ceiling" design principle.
+        uint256 extra = FixedPointMathLib.mulDivDown(uint256(MAX_SURCHARGE_FEE - BASE_FEE), signal2ScoreX18 / 2, 1e18);
+        // forge-lint: disable-next-line(unsafe-typecast)
+        return uint24(BASE_FEE + extra);
+    }
+
+    /// @notice Signal 2: compares this swap's expected price impact
+    /// (computed via the pool's own real swap math, not an approximation)
+    /// against this specific pool's own recent baseline impact. A swap
+    /// causing disproportionate impact relative to how this pool normally
+    /// behaves is treated as toxic/exploitative, independent of Signal 1.
+    /// @return isExcessive True if impact exceeds EXCESS_MULTIPLIER_BPS
+    ///         times the pool's baseline.
+    /// @return excessRatioX18 impactBps / baselineBps, at 1e18 fixed point
+    ///         (0 if no baseline exists yet).
+    /// @return impactBps This swap's own computed price impact, in basis
+    ///         points — always returned (even when not "excessive") so it
+    ///         can be folded into the baseline EMA in `_afterSwap`.
+    function _signal2(PoolId poolId, PoolKey calldata, SwapParams calldata params)
+        internal
+        view
+        returns (bool isExcessive, uint256 excessRatioX18, uint256 impactBps)
+    {
+        (uint160 sqrtPriceCurrentX96,,,) = poolManager.getSlot0(poolId);
+        uint128 liquidity = poolManager.getLiquidity(poolId);
+
+        if (liquidity == 0 || sqrtPriceCurrentX96 == 0) {
+            return (false, 0, 0);
+        }
+
+        // Compute the sqrtPrice this swap would move to, using the pool's
+        // own real swap-step math (the same function v4-core itself uses
+        // internally) rather than a crude size/liquidity ratio. feePips is
+        // passed as 0 here deliberately: we want the RAW price movement
+        // this swap size would cause against current liquidity, not a
+        // fee-adjusted figure (the fee is what we're computing).
+        (uint160 sqrtPriceNextX96,,,) = SwapMath.computeSwapStep(
+            sqrtPriceCurrentX96, params.sqrtPriceLimitX96, liquidity, params.amountSpecified, 0
+        );
+
+        // First-order approximation: price ~ sqrtPrice^2, so for a small
+        // fractional change epsilon in sqrtPrice, the resulting fractional
+        // change in price is ~2*epsilon. We use this instead of squaring
+        // sqrtPriceX96 directly, which can overflow uint256 arithmetic for
+        // prices near the extreme ends of the valid tick range. Since this
+        // value is used only as a relative-magnitude toxicity SIGNAL (compared
+        // against this pool's own recent history), basis-point-level
+        // approximation error is an acceptable, documented tradeoff — see
+        // README calibration notes.
+        uint256 ratioX18 = FixedPointMathLib.mulDivDown(uint256(sqrtPriceNextX96), 1e18, uint256(sqrtPriceCurrentX96));
+        uint256 diffX18 = ratioX18 > 1e18 ? ratioX18 - 1e18 : 1e18 - ratioX18;
+        impactBps = (diffX18 * 2 * BPS_DENOMINATOR) / 1e18;
+
+        uint256 baseline = baselineImpactBps[poolId];
+        if (!baselineInitialized[poolId] || baseline == 0) {
+            // No meaningful baseline yet for this pool — treat as normal
+            // rather than flagging a pool's very first swaps as toxic
+            // before we have any real history to compare against.
+            return (false, 0, impactBps);
+        }
+
+        excessRatioX18 = FixedPointMathLib.mulDivDown(impactBps, 1e18, baseline);
+        uint256 thresholdRatioX18 = FixedPointMathLib.mulDivDown(EXCESS_MULTIPLIER_BPS, 1e18, BPS_DENOMINATOR);
+        isExcessive = excessRatioX18 >= thresholdRatioX18;
     }
 
     /// @notice Signal 1: compares the pool's current price against a live

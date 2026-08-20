@@ -2,6 +2,7 @@
 pragma solidity ^0.8.26;
 
 import {Test} from "forge-std/Test.sol";
+import {console} from "forge-std/console.sol";
 import {Deployers} from "@uniswap/v4-core/test/utils/Deployers.sol";
 
 import {IPoolManager} from "v4-core/interfaces/IPoolManager.sol";
@@ -322,6 +323,104 @@ contract BallastHookTest is Test, Deployers {
         // fix, these two values would differ by a factor of 10^12 and this
         // assertion would fail.
         assertEq(fee, hook2.BASE_FEE());
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Signal 2: first swap on a pool seeds the baseline (no prior history
+    // to compare against), so it must not be flagged toxic on that basis
+    // alone — should charge the base fee (since Signal 1 is at parity too).
+    // ─────────────────────────────────────────────────────────────────────
+
+    function test_previewFee_firstSwap_seedsBaseline_notFlaggedExcessive() public view {
+        SwapParams memory params = SwapParams({
+            zeroForOne: true,
+            amountSpecified: -0.001 ether,
+            sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+        });
+
+        // Before any real swap has executed via the router, there is no
+        // baseline yet — previewFee must not revert or wrongly flag this.
+        uint24 fee = hook.previewFee(key, params);
+        assertEq(fee, hook.BASE_FEE());
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Signal 2: after establishing a baseline with several small, similar
+    // swaps, a much larger swap (disproportionate impact for this pool's
+    // recent behavior) should be charged a surcharge, even when Signal 1
+    // shows no oracle deviation at all — proving Signal 2 fires
+    // independently.
+    // ─────────────────────────────────────────────────────────────────────
+
+    function test_previewFee_disproportionateSwap_chargesSurcharge_viaSignal2Alone() public {
+        PoolSwapTest.TestSettings memory settings = PoolSwapTestSettings();
+
+        // Establish a baseline with several small, consistent swaps.
+        SwapParams memory smallParams = SwapParams({
+            zeroForOne: true,
+            amountSpecified: -0.05 ether,
+            sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+        });
+        for (uint256 i = 0; i < 5; i++) {
+            swapRouter.swap(key, smallParams, settings, ZERO_BYTES);
+        }
+
+        // A much larger swap should cause disproportionate price impact
+        // relative to the small-swap baseline just established. Signal 1
+        // is price-based, not size-based, so a swap's SIZE alone does not
+        // change what Signal 1 reports — any surcharge beyond base fee
+        // here is attributable to Signal 2, proving it fires
+        // independently of Signal 1.
+
+        SwapParams memory largeParams = SwapParams({
+            zeroForOne: true,
+            amountSpecified: -5 ether,
+            sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+        });
+
+        uint24 fee = hook.previewFee(key, largeParams);
+
+        assertGt(fee, hook.BASE_FEE());
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Combined signals: pushing BOTH signals to fire at once must not
+    // exceed MAX_SURCHARGE_FEE — the hard ceiling holds regardless of how
+    // extreme either individual signal's inputs are.
+    // ─────────────────────────────────────────────────────────────────────
+
+    function test_previewFee_bothSignalsExtreme_neverExceedsMaxSurcharge() public {
+        PoolSwapTest.TestSettings memory settings = PoolSwapTestSettings();
+
+        // Establish a small baseline.
+        SwapParams memory smallParams = SwapParams({
+            zeroForOne: true,
+            amountSpecified: -0.05 ether,
+            sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+        });
+        for (uint256 i = 0; i < 5; i++) {
+            swapRouter.swap(key, smallParams, settings, ZERO_BYTES);
+        }
+
+        // Push pool price far from the oracle (Signal 1 toxic) AND make
+        // the next preview swap large relative to the baseline (Signal 2
+        // excessive), simultaneously.
+        SwapParams memory pushParams = SwapParams({
+            zeroForOne: false,
+            amountSpecified: -10 ether,
+            sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
+        });
+        swapRouter.swap(key, pushParams, settings, ZERO_BYTES);
+
+        SwapParams memory extremeParams = SwapParams({
+            zeroForOne: false,
+            amountSpecified: -10 ether,
+            sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
+        });
+
+        uint24 fee = hook.previewFee(key, extremeParams);
+
+        assertLe(fee, hook.MAX_SURCHARGE_FEE());
     }
 
     function PoolSwapTestSettings() internal pure returns (PoolSwapTest.TestSettings memory) {
