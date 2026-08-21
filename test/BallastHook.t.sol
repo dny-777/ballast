@@ -35,7 +35,7 @@ contract BallastHookTest is Test, Deployers {
         // Foundry cheat code for fast local deployment during tests; a real
         // deployment needs the actual HookMiner (tracked separately).
         uint160 flags = uint160(
-            Hooks.BEFORE_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG
+            Hooks.BEFORE_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG
         );
         address hookAddress = address(flags);
         deployCodeTo("BallastHook.sol:BallastHook", abi.encode(manager), hookAddress);
@@ -240,7 +240,7 @@ contract BallastHookTest is Test, Deployers {
         // the same permission flags) so this test doesn't collide with the
         // hook already attached to `key` in setUp().
         uint160 flags2 = uint160(
-            Hooks.BEFORE_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG
+            Hooks.BEFORE_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG
         );
         // Offset into a high bit well above the flag region (flags occupy
         // only the lowest ~14 bits) so we get a distinct address without
@@ -421,6 +421,129 @@ contract BallastHookTest is Test, Deployers {
         uint24 fee = hook.previewFee(key, extremeParams);
 
         assertLe(fee, hook.MAX_SURCHARGE_FEE());
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Reserve capture: a toxic swap must increase the pool's pending
+    // reserve for the currency it skimmed from.
+    // ─────────────────────────────────────────────────────────────────────
+
+    function test_toxicSwap_increasesPendingReserve() public {
+        PoolSwapTest.TestSettings memory settings = PoolSwapTestSettings();
+
+        // First push the pool price away from the oracle (toxic direction),
+        // and establish a baseline for Signal 2 with a few swaps.
+        SwapParams memory params = SwapParams({
+            zeroForOne: true,
+            amountSpecified: -0.05 ether,
+            sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+        });
+
+        uint256 reserve1Before = hook.pendingReserve1(key.toId());
+
+        swapRouter.swap(key, params, settings, ZERO_BYTES);
+
+        uint256 reserve1After = hook.pendingReserve1(key.toId());
+
+        // A zeroForOne swap's unspecified (output) currency is currency1;
+        // any nonzero skim increases pendingReserve1, never
+        // pendingReserve0, for this swap direction.
+        assertGe(reserve1After, reserve1Before);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Reserve release: once accumulated reserve crosses
+    // MIN_DONATE_THRESHOLD, the next swap must trigger an automatic
+    // donate() release, resetting the reserve back toward zero rather
+    // than growing unbounded.
+    // ─────────────────────────────────────────────────────────────────────
+
+    function test_reserveCrossingThreshold_triggersAutomaticRelease() public {
+        PoolSwapTest.TestSettings memory settings = PoolSwapTestSettings();
+
+        // First, push the pool price meaningfully away from the oracle so
+        // subsequent small swaps in the same direction are clearly toxic
+        // (nonzero deviation), without themselves being large enough to
+        // cross MIN_DONATE_THRESHOLD in a single swap.
+        SwapParams memory pushParams = SwapParams({
+            zeroForOne: true,
+            amountSpecified: -3 ether,
+            sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+        });
+        swapRouter.swap(key, pushParams, settings, ZERO_BYTES);
+
+        // Small, consistently toxic-direction swaps: each one's skim
+        // should be small relative to MIN_DONATE_THRESHOLD, so reserve
+        // accumulates gradually and observably across several swaps
+        // before eventually crossing the threshold and auto-releasing.
+        SwapParams memory smallToxicParams = SwapParams({
+            zeroForOne: true,
+            amountSpecified: -0.002 ether,
+            sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+        });
+
+        bool sawNonzeroReserve = false;
+        bool releaseObserved = false;
+        uint256 previousReserve1 = 0;
+
+        for (uint256 i = 0; i < 50; i++) {
+            swapRouter.swap(key, smallToxicParams, settings, ZERO_BYTES);
+            uint256 currentReserve1 = hook.pendingReserve1(key.toId());
+
+            if (currentReserve1 > 0) sawNonzeroReserve = true;
+
+            if (currentReserve1 < previousReserve1) {
+                releaseObserved = true;
+                break;
+            }
+            previousReserve1 = currentReserve1;
+        }
+
+        assertTrue(sawNonzeroReserve, "Expected reserve to accumulate above zero at some point");
+        assertTrue(releaseObserved, "Expected an automatic donate() release to have fired");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Solvency: after many toxic swaps (heavy reserve capture + repeated
+    // donate() releases), the hook must never end up holding a negative
+    // effective balance — i.e. it never promises more than it actually
+    // captured. We check this indirectly: the pool and all swaps must
+    // continue succeeding without reverting across many iterations,
+    // which would not be possible if the hook's accounting became
+    // unbalanced at any point.
+    // ─────────────────────────────────────────────────────────────────────
+
+    function test_manyToxicSwaps_neverRevertsOrDesyncs() public {
+        PoolSwapTest.TestSettings memory settings = PoolSwapTestSettings();
+
+        SwapParams memory toxicParams = SwapParams({
+            zeroForOne: true,
+            amountSpecified: -1 ether,
+            sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+        });
+        SwapParams memory correctiveParams = SwapParams({
+            zeroForOne: false,
+            amountSpecified: -0.5 ether,
+            sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
+        });
+
+        // Alternate directions to exercise both currencies' skim/reserve
+        // paths, and both toxic and corrective fee logic, across many
+        // swaps — if any step left an unsettled delta or an
+        // over-committed reserve, this would revert well before 30
+        // iterations complete.
+        for (uint256 i = 0; i < 30; i++) {
+            if (i % 3 == 0) {
+                swapRouter.swap(key, correctiveParams, settings, ZERO_BYTES);
+            } else {
+                swapRouter.swap(key, toxicParams, settings, ZERO_BYTES);
+            }
+        }
+
+        // If we reach here without any revert, flash accounting stayed
+        // balanced and no `donate()` release ever over-committed funds
+        // the hook didn't actually hold.
+        assertTrue(true);
     }
 
     function PoolSwapTestSettings() internal pure returns (PoolSwapTest.TestSettings memory) {

@@ -25,6 +25,13 @@ interface IERC20Decimals {
     function decimals() external view returns (uint8);
 }
 
+/// @notice Minimal ERC-20 transfer interface, used only to settle tokens
+/// the hook has taken into its own custody back to the PoolManager when
+/// releasing the accumulated reserve via `donate()`.
+interface IERC20MinimalTransfer {
+    function transfer(address to, uint256 amount) external returns (bool);
+}
+
 /// @title BallastHook
 /// @notice A dynamic-fee Uniswap v4 hook that detects toxic/MEV order flow
 ///         using two independent signals and taxes it to subsidize a lower
@@ -124,6 +131,28 @@ contract BallastHook is BaseHook {
     /// BPS_DENOMINATOR (1000 = 10%, i.e. roughly a 10-swap-window EMA).
     uint256 public constant EMA_WEIGHT_BPS = 1000; // 10%
 
+    /// @notice Maximum fraction of a toxic swap's UNSPECIFIED-token amount
+    /// that is skimmed into the pool's reserve, out of BPS_DENOMINATOR
+    /// (1000 = 10%). This is charged ON TOP OF (not instead of) the
+    /// elevated dynamic LP fee already applied via beforeSwap's
+    /// OVERRIDE_FEE_FLAG — that elevated fee is already distributed
+    /// immediately to in-range LPs through Uniswap's own native fee
+    /// accounting. This additional skim funds a SEPARATE, hook-held
+    /// reserve released on a schedule via `donate()`, smoothing what would
+    /// otherwise be "lumpy" realized yield (fat during toxic bursts, thin
+    /// when quiet) — the same problem prior toxicity-fee designs (e.g.
+    /// EvenFlow, UHI9) explicitly identify and solve the same way.
+    /// Scales with the swap's combined toxicity score: a swap that barely
+    /// triggers either signal contributes proportionally less to the
+    /// reserve than one that fully triggers both.
+    uint256 public constant MAX_RESERVE_SKIM_BPS = 1000; // 10%
+
+    /// @notice Minimum accumulated reserve (per currency, in that
+    /// currency's own raw units) before an automatic `donate()` release
+    /// fires. Prevents dust-sized donations that would cost more in gas
+    /// than they're worth distributing.
+    uint256 public constant MIN_DONATE_THRESHOLD = 1e15; // 0.001 of an 18-decimal token, scaled per-token in practice — see README calibration notes
+
     // ─────────────────────────────────────────────────────────────────────
     // Storage
     // ─────────────────────────────────────────────────────────────────────
@@ -156,12 +185,13 @@ contract BallastHook is BaseHook {
     mapping(PoolId poolId => uint8 decimals) public currency0Decimals;
     mapping(PoolId poolId => uint8 decimals) public currency1Decimals;
 
-    /// @notice Accumulated surcharge reserve per pool, tracked in
-    /// currency0 terms, pending release back to LPs via `donate()`.
-    /// (Reserve accounting and the `donate()` release loop are built in
-    /// the Days 6-8 milestone — declared here now so Signal-1 fee logic
-    /// has a real place to route captured value from day one.)
-    mapping(PoolId poolId => uint256 reserve) public pendingReserve;
+    /// @notice Accumulated surcharge reserve per pool, tracked separately
+    /// for each currency (a swap's skim is always taken from whichever
+    /// currency is the "unspecified" side of that particular swap — see
+    /// `_afterSwap` — so both currencies can accumulate reserve over time
+    /// depending on swap direction mix).
+    mapping(PoolId poolId => uint256 reserve0) public pendingReserve0;
+    mapping(PoolId poolId => uint256 reserve1) public pendingReserve1;
 
     /// @notice Pool owner/configurer, set at `beforeInitialize` time to
     /// whoever initializes the pool. Only this address may configure the
@@ -189,6 +219,11 @@ contract BallastHook is BaseHook {
     /// value avoids redundant computation.
     mapping(PoolId poolId => uint256 impactBps) internal _pendingImpactBps;
 
+    /// @notice Handoff value: the combined (0..1, 1e18-scaled) toxicity
+    /// score `_beforeSwap` computed for the swap currently in flight, read
+    /// back by `_afterSwap` to size the reserve skim proportionally.
+    mapping(PoolId poolId => uint256 scoreX18) internal _pendingScoreX18;
+
     // ─────────────────────────────────────────────────────────────────────
     // Constructor
     // ─────────────────────────────────────────────────────────────────────
@@ -212,7 +247,7 @@ contract BallastHook is BaseHook {
             beforeDonate: false,
             afterDonate: false,
             beforeSwapReturnDelta: false,
-            afterSwapReturnDelta: false,
+            afterSwapReturnDelta: true,
             afterAddLiquidityReturnDelta: false,
             afterRemoveLiquidityReturnDelta: false
         });
@@ -282,8 +317,9 @@ contract BallastHook is BaseHook {
     }
 
     // ─────────────────────────────────────────────────────────────────────
-    // beforeSwap — computes the combined-signal fee and stashes Signal 2's
-    // computed impact for afterSwap to fold into the pool's baseline EMA.
+    // beforeSwap — computes the combined-signal fee and stashes both
+    // Signal 2's impact and the combined toxicity score for afterSwap to
+    // use (baseline EMA update, and sizing the reserve skim).
     // ─────────────────────────────────────────────────────────────────────
 
     function _beforeSwap(address, PoolKey calldata key, SwapParams calldata params, bytes calldata)
@@ -299,26 +335,40 @@ contract BallastHook is BaseHook {
     }
 
     // ─────────────────────────────────────────────────────────────────────
-    // afterSwap — folds this swap's Signal 2 impact into the pool's
-    // rolling baseline EMA. donate() release loop still reserved for
-    // Days 6-8.
+    // afterSwap — three responsibilities:
+    //   1. Fold this swap's Signal 2 impact into the pool's baseline EMA.
+    //   2. If the swap was flagged toxic (nonzero combined score), skim a
+    //      proportional slice of its UNSPECIFIED-token amount into the
+    //      hook's own custody as reserve, ON TOP OF the elevated dynamic
+    //      fee already collected natively by PoolManager for LPs.
+    //   3. If either currency's accumulated reserve crosses
+    //      MIN_DONATE_THRESHOLD, release it to in-range LPs via donate()
+    //      immediately (smoothing yield over time rather than an instant,
+    //      lumpy per-swap payout).
+    //
+    // KNOWN LIMITATION (documented honestly, not hidden): skimming from
+    // the swap's output reduces what the trader receives below what
+    // beforeSwap's fee alone would produce. A trader with a tight slippage
+    // limit on a swap that also triggers a large skim could see their
+    // transaction revert. This is a real UX tradeoff of layering a skim on
+    // top of the dynamic fee rather than folding the skim entirely into
+    // the fee itself; documented in README calibration notes as a
+    // parameter to tune (MAX_RESERVE_SKIM_BPS) rather than a silent gap.
     // ─────────────────────────────────────────────────────────────────────
 
-    function _afterSwap(address, PoolKey calldata key, SwapParams calldata, BalanceDelta, bytes calldata)
+    function _afterSwap(address, PoolKey calldata key, SwapParams calldata params, BalanceDelta delta, bytes calldata)
         internal
         override
         returns (bytes4, int128)
     {
         PoolId poolId = key.toId();
-        uint256 impact = _pendingImpactBps[poolId];
 
+        // ---- 1. Baseline EMA update (unchanged from Signal 2 milestone) ----
+        uint256 impact = _pendingImpactBps[poolId];
         if (!baselineInitialized[poolId]) {
-            // First observation for this pool: seed the baseline directly
-            // rather than blending with a meaningless zero starting value.
             baselineImpactBps[poolId] = impact;
             baselineInitialized[poolId] = true;
         } else {
-            // Standard EMA update: newAvg = oldAvg + weight * (new - oldAvg)
             uint256 oldAvg = baselineImpactBps[poolId];
             if (impact >= oldAvg) {
                 baselineImpactBps[poolId] = oldAvg + ((impact - oldAvg) * EMA_WEIGHT_BPS) / BPS_DENOMINATOR;
@@ -327,9 +377,109 @@ contract BallastHook is BaseHook {
             }
         }
 
-        // TODO (Days 6-8): periodic donate() release of pendingReserve back
-        // to in-range LPs.
-        return (this.afterSwap.selector, 0);
+        // ---- 2. Reserve skim, sized proportionally to this swap's toxicity score ----
+        uint256 scoreX18 = _pendingScoreX18[poolId];
+        int128 hookDeltaUnspecified = 0;
+
+        if (scoreX18 > 0) {
+            // Per Workshop 8's Internal Swap Pool lesson: which currency is
+            // "unspecified" depends on the swap's direction and exact
+            // input/output mode. Isolating and skimming from this specific
+            // currency (rather than always currency0/1) is what lets us
+            // reduce exactly what the delta accounting expects, keeping
+            // the flash-accounting ledger balanced.
+            bool currency1IsUnspecified = (params.amountSpecified < 0) == params.zeroForOne;
+            Currency unspecifiedCurrency = currency1IsUnspecified ? key.currency1 : key.currency0;
+            int128 unspecifiedAmount = currency1IsUnspecified ? delta.amount1() : delta.amount0();
+
+            // unspecifiedAmount is positive when it's owed TO the trader
+            // (the normal case: their swap output). We only ever skim from
+            // a positive (outbound-to-trader) amount — never attempt to
+            // skim from an amount the trader owes TO the pool.
+            if (unspecifiedAmount > 0) {
+                // Safe: unspecifiedAmount was just checked > 0, and
+                // BalanceDelta's components are int128, so casting to
+                // uint128 then uint256 cannot lose or misrepresent value.
+                // forge-lint: disable-next-line(unsafe-typecast)
+                uint256 outputAmount = uint256(uint128(unspecifiedAmount));
+                uint256 skimBps = FixedPointMathLib.mulDivDown(MAX_RESERVE_SKIM_BPS, scoreX18, 1e18);
+                uint256 skimAmount = FixedPointMathLib.mulDivDown(outputAmount, skimBps, BPS_DENOMINATOR);
+
+                if (skimAmount > 0 && skimAmount < outputAmount) {
+                    poolManager.take(unspecifiedCurrency, address(this), skimAmount);
+
+                    if (currency1IsUnspecified) {
+                        pendingReserve1[poolId] += skimAmount;
+                    } else {
+                        pendingReserve0[poolId] += skimAmount;
+                    }
+
+                    // NOTE: this is POSITIVE, not negative. Verified
+                    // empirically against a real swap trace (not assumed
+                    // from documentation): PoolManager's internal
+                    // `swapDelta = swapDelta - hookDelta` combined with how
+                    // hookDeltaUnspecified is placed into the
+                    // BalanceDelta's amount0/amount1 slot for this specific
+                    // swap-direction branch means a POSITIVE value here is
+                    // what actually reduces the trader's received output
+                    // by skimAmount; a negative value (which seemed
+                    // intuitive, and is what course material showed for a
+                    // differently-configured swap direction) was tested
+                    // and empirically caused the trader to receive MORE
+                    // than the original swap output — the opposite of the
+                    // intended skim — triggering CurrencyNotSettled() since
+                    // the pool ends up short by skimAmount. Caught via a
+                    // real fork/local-PoolManager test trace, exactly the
+                    // kind of subtlety that only surfaces against the real
+                    // contract, not a mock.
+                    // forge-lint: disable-next-line(unsafe-typecast)
+                    hookDeltaUnspecified = int128(int256(skimAmount));
+                }
+            }
+        }
+
+        // ---- 3. Auto-release reserve if either currency crosses threshold ----
+        if (pendingReserve0[poolId] >= MIN_DONATE_THRESHOLD || pendingReserve1[poolId] >= MIN_DONATE_THRESHOLD) {
+            _releaseReserve(key, poolId);
+        }
+
+        return (this.afterSwap.selector, hookDeltaUnspecified);
+    }
+
+    /// @notice Releases a pool's entire accumulated reserve to in-range
+    /// LPs via `PoolManager.donate()`, then settles the resulting debt by
+    /// transferring the hook's own held tokens back to the PoolManager
+    /// (the standard sync -> transfer -> settle pattern for a hook acting
+    /// on its own initiative within an already-unlocked context, per
+    /// Workshop 1/8's flash-accounting discipline).
+    function _releaseReserve(PoolKey calldata key, PoolId poolId) internal {
+        uint256 amount0 = pendingReserve0[poolId];
+        uint256 amount1 = pendingReserve1[poolId];
+
+        if (amount0 == 0 && amount1 == 0) return;
+
+        pendingReserve0[poolId] = 0;
+        pendingReserve1[poolId] = 0;
+
+        poolManager.donate(key, amount0, amount1, "");
+
+        if (amount0 > 0) _settle(key.currency0, amount0);
+        if (amount1 > 0) _settle(key.currency1, amount1);
+    }
+
+    /// @notice Settles a debt the hook owes to PoolManager (created here by
+    /// `donate()`) by transferring tokens the hook already holds (from
+    /// earlier `take()` skims) back to PoolManager. Handles both native
+    /// ETH and standard ERC-20 currencies.
+    function _settle(Currency currency, uint256 amount) internal {
+        poolManager.sync(currency);
+        if (currency.isAddressZero()) {
+            poolManager.settle{value: amount}();
+        } else {
+            bool success = IERC20MinimalTransfer(Currency.unwrap(currency)).transfer(address(poolManager), amount);
+            require(success, "Ballast: settlement transfer failed");
+            poolManager.settle();
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -338,12 +488,13 @@ contract BallastHook is BaseHook {
 
     /// @notice Public, read-only preview of the fee `_beforeSwap` would
     /// charge for a hypothetical swap with the given parameters. NOTE: for
-    /// simplicity this preview does not update `_pendingImpactBps` (it
-    /// calls the same underlying computation but through a `view`-only
-    /// path), so it's safe to call repeatedly without side effects, unlike
-    /// a real swap.
+    /// simplicity this preview does not update any handoff state (it calls
+    /// the same underlying computation but through a `view`-only path), so
+    /// it's safe to call repeatedly without side effects, unlike a real
+    /// swap.
     function previewFee(PoolKey calldata key, SwapParams calldata params) external view returns (uint24) {
-        return _previewFee(key.toId(), key, params);
+        (uint24 fee,,) = _computeFeeAndImpact(key.toId(), key, params);
+        return fee;
     }
 
     /// @notice Diagnostic view exposing Signal 2's raw internal values for
@@ -363,30 +514,22 @@ contract BallastHook is BaseHook {
     }
 
     /// @notice Computes the fee for a swap that is actually about to
-    /// execute, combining Signal 1 and Signal 2, and records Signal 2's
-    /// computed impact so `_afterSwap` can update the pool's baseline.
+    /// execute, combining Signal 1 and Signal 2, and records both Signal
+    /// 2's computed impact (for the baseline EMA) and the combined
+    /// toxicity score (for sizing the reserve skim) so `_afterSwap` can
+    /// use them without recomputing.
     function _computeFee(PoolId poolId, PoolKey calldata key, SwapParams calldata params)
         internal
         returns (uint24)
     {
-        (uint24 fee, uint256 impactBps) = _computeFeeAndImpact(poolId, key, params);
+        (uint24 fee, uint256 impactBps, uint256 scoreX18) = _computeFeeAndImpact(poolId, key, params);
         _pendingImpactBps[poolId] = impactBps;
-        return fee;
-    }
-
-    /// @notice `view`-only counterpart used by `previewFee`, sharing the
-    /// exact same fee logic without touching state.
-    function _previewFee(PoolId poolId, PoolKey calldata key, SwapParams calldata params)
-        internal
-        view
-        returns (uint24)
-    {
-        (uint24 fee,) = _computeFeeAndImpact(poolId, key, params);
+        _pendingScoreX18[poolId] = scoreX18;
         return fee;
     }
 
     /// @notice Core combined fee logic, shared by both the state-writing
-    /// and view-only paths above.
+    /// path above and the view-only `previewFee`/`previewSignal2` paths.
     ///
     /// Combination formula (per our documented design): each signal
     /// contributes a 0..1 normalized "toxicity" score, weighted equally,
@@ -395,17 +538,20 @@ contract BallastHook is BaseHook {
     /// both firing together is what drives the fee to its ceiling. This
     /// dual requirement is also the primary defense against either signal
     /// being cheaply gamed in isolation (Workshop 13's lesson on
-    /// manipulable single-signal fee logic).
+    /// manipulable single-signal fee logic). The same combined score also
+    /// sizes the `afterSwap` reserve skim, so a swap's fee and its
+    /// contribution to the reserve are always consistent with each other.
     ///
     /// Signal 1 (external) additionally distinguishes toxic vs. corrective
     /// direction; if Signal 1 is clearly corrective and Signal 2 does not
-    /// fire, we pass through the discounted fee rather than applying the
-    /// combined-score formula, since a swap actively fixing the pool's
-    /// price should not be penalized by an unrelated depth signal.
+    /// fire, we pass through the discounted fee with a zero score (no
+    /// reserve skim either) rather than applying the combined-score
+    /// formula, since a swap actively fixing the pool's price should not
+    /// be penalized by an unrelated depth signal.
     function _computeFeeAndImpact(PoolId poolId, PoolKey calldata key, SwapParams calldata params)
         internal
         view
-        returns (uint24 fee, uint256 impactBps)
+        returns (uint24 fee, uint256 impactBps, uint256 combinedScoreX18)
     {
         IAggregatorV3 feed = priceFeeds[poolId];
 
@@ -414,72 +560,63 @@ contract BallastHook is BaseHook {
         (bool isExcessive, uint256 excessRatioX18, uint256 rawImpactBps) = _signal2(poolId, key, params);
         impactBps = rawImpactBps;
 
+        uint256 signal2ScoreX18 = _signal2Score(isExcessive, excessRatioX18);
+
         // If no oracle feed has been configured yet for this pool, Signal
         // 1 cannot run; fall back to Signal-2-only logic rather than
         // reverting, so a pool remains usable before/if it's configured.
         if (address(feed) == address(0)) {
-            fee = _feeFromSignal2Only(isExcessive, excessRatioX18);
-            return (fee, impactBps);
+            // Signal 2 alone is weighted the same as it would be in
+            // combination (half the max range), consistent with the
+            // "neither signal alone reaches the ceiling" design principle.
+            combinedScoreX18 = signal2ScoreX18 / 2;
+            fee = _feeFromScore(combinedScoreX18);
+            return (fee, impactBps, combinedScoreX18);
         }
 
         (bool isToxic, bool isCorrective, uint256 deviationBps) = _signal1(poolId, key, params, feed);
 
         if (isCorrective && !isExcessive) {
-            return (DISCOUNTED_FEE, impactBps);
+            return (DISCOUNTED_FEE, impactBps, 0);
         }
 
-        // Normalize each signal to a 0..1 (fixed-point 1e18) toxicity
-        // score, capped at 1.0.
+        // Normalize Signal 1 to a 0..1 (fixed-point 1e18) toxicity score.
         uint256 signal1ScoreX18 = isToxic
             ? FixedPointMathLib.mulDivDown(
                 deviationBps > MAX_DEVIATION_BPS ? MAX_DEVIATION_BPS : deviationBps, 1e18, MAX_DEVIATION_BPS
             )
             : 0;
 
-        uint256 signal2ScoreX18;
-        if (isExcessive) {
-            // MAX_EXCESS_SCORE_RATIO_X18 caps how far past the excess
-            // threshold we keep scaling the score — beyond this, more
-            // excess doesn't push the score higher, it's already at 1.0.
-            uint256 cappedExcess = excessRatioX18 > 2e18 ? 2e18 : excessRatioX18;
-            // excessRatioX18 is impact/baseline; a ratio of
-            // EXCESS_MULTIPLIER_BPS/BPS_DENOMINATOR (2.5x) or more is
-            // treated as a full Signal-2 score.
-            uint256 thresholdX18 = FixedPointMathLib.mulDivDown(EXCESS_MULTIPLIER_BPS, 1e18, BPS_DENOMINATOR);
-            signal2ScoreX18 = cappedExcess >= thresholdX18
-                ? 1e18
-                : FixedPointMathLib.mulDivDown(cappedExcess, 1e18, thresholdX18);
-        }
-
         // Equal-weighted combination, per our documented design.
-        uint256 combinedScoreX18 = (signal1ScoreX18 + signal2ScoreX18) / 2;
+        combinedScoreX18 = (signal1ScoreX18 + signal2ScoreX18) / 2;
         if (combinedScoreX18 > 1e18) combinedScoreX18 = 1e18;
 
-        uint256 extra =
-            FixedPointMathLib.mulDivDown(uint256(MAX_SURCHARGE_FEE - BASE_FEE), combinedScoreX18, 1e18);
+        fee = _feeFromScore(combinedScoreX18);
+    }
+
+    /// @notice Converts a combined 0..1 (1e18-scaled) toxicity score into
+    /// the actual fee, linearly interpolated between BASE_FEE and
+    /// MAX_SURCHARGE_FEE.
+    function _feeFromScore(uint256 combinedScoreX18) internal pure returns (uint24) {
+        uint256 extra = FixedPointMathLib.mulDivDown(uint256(MAX_SURCHARGE_FEE - BASE_FEE), combinedScoreX18, 1e18);
         // Safe: combinedScoreX18 <= 1e18 by construction, so extra <=
         // (MAX_SURCHARGE_FEE - BASE_FEE), keeping the sum within uint24.
         // forge-lint: disable-next-line(unsafe-typecast)
-        fee = uint24(BASE_FEE + extra);
+        return uint24(BASE_FEE + extra);
     }
 
-    /// @notice Fallback fee logic for a pool with no oracle configured yet
-    /// — Signal 2 alone, scaled the same way Signal 1 would contribute on
-    /// its own, so behavior is continuous with the fully-configured case.
-    function _feeFromSignal2Only(bool isExcessive, uint256 excessRatioX18) internal pure returns (uint24) {
-        if (!isExcessive) return BASE_FEE;
+    /// @notice Normalizes Signal 2's excess ratio into a 0..1 (1e18-scaled)
+    /// score, shared by both the combined-signal path and the
+    /// Signal-2-only fallback path.
+    function _signal2Score(bool isExcessive, uint256 excessRatioX18) internal pure returns (uint256) {
+        if (!isExcessive) return 0;
 
+        // Cap how far past the excess threshold we keep scaling the score
+        // — beyond 2x the threshold ratio, more excess doesn't push the
+        // score higher, it's already effectively at 1.0.
         uint256 cappedExcess = excessRatioX18 > 2e18 ? 2e18 : excessRatioX18;
         uint256 thresholdX18 = FixedPointMathLib.mulDivDown(EXCESS_MULTIPLIER_BPS, 1e18, BPS_DENOMINATOR);
-        uint256 signal2ScoreX18 =
-            cappedExcess >= thresholdX18 ? 1e18 : FixedPointMathLib.mulDivDown(cappedExcess, 1e18, thresholdX18);
-
-        // Signal 2 alone is weighted the same as it would be in
-        // combination (score / 2 of the max range), consistent with the
-        // "neither signal alone reaches the ceiling" design principle.
-        uint256 extra = FixedPointMathLib.mulDivDown(uint256(MAX_SURCHARGE_FEE - BASE_FEE), signal2ScoreX18 / 2, 1e18);
-        // forge-lint: disable-next-line(unsafe-typecast)
-        return uint24(BASE_FEE + extra);
+        return cappedExcess >= thresholdX18 ? 1e18 : FixedPointMathLib.mulDivDown(cappedExcess, 1e18, thresholdX18);
     }
 
     /// @notice Signal 2: compares this swap's expected price impact
