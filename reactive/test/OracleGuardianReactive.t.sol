@@ -8,7 +8,7 @@ import {IReactive} from "reactive-lib-omni/src/interfaces/IReactive.sol";
 import {MockSystemContract} from "./mocks/MockSystemContract.sol";
 
 contract OracleGuardianReactiveTest is Test {
-    address constant SYSTEM_ADDR = 0x8888888888888888888888888888888888888888;
+    address constant SYSTEM_ADDR = 0x0000000000000000000000000000000000fffFfF;
 
     OracleGuardianReactive guardian;
     MockSystemContract mockSystem;
