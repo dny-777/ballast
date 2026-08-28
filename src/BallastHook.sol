@@ -85,6 +85,44 @@ contract BallastHook is BaseHook {
     error InvalidOraclePrice(int256 answer);
 
     // ─────────────────────────────────────────────────────────────────────
+    // Events
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// @notice Emitted every time a pool's oracle configuration is set or
+    /// changed, for auditability. See `configurePool`'s NatSpec for the
+    /// trust assumption this event exists to make visible: the
+    /// configurer retains unilateral, ongoing ability to change the
+    /// oracle feed for as long as the pool exists.
+    event PoolConfigured(
+        PoolId indexed poolId, address indexed feed, bool oracleMatchesPoolDirection, uint256 staleness
+    );
+
+    /// @notice Emitted when a CHANGE to an already-configured pool's oracle
+    /// is queued (not the initial configuration, which applies
+    /// immediately — see `configurePool`). Anyone watching this event has
+    /// the full timelock window to notice and react before the change can
+    /// take effect.
+    event OracleChangeQueued(PoolId indexed poolId, address indexed newFeed, uint256 effectiveAt);
+
+    /// @notice Emitted when a previously-queued oracle change actually
+    /// takes effect, after the timelock has elapsed.
+    event OracleChangeApplied(PoolId indexed poolId, address indexed newFeed);
+
+    /// @notice Emitted when a pool's guardian address is set or changed.
+    event GuardianSet(PoolId indexed poolId, address indexed guardian);
+
+    /// @notice Emitted the instant a pool is paused by its guardian.
+    /// Watching this event is itself a useful transparency signal —
+    /// anyone can independently confirm a pause happened and when.
+    event GuardianPaused(PoolId indexed poolId, address indexed guardian, uint256 timestamp);
+
+    /// @notice Emitted when a paused pool is resumed. Deliberately only
+    /// ever emitted by `resume()`, which only the pool CONFIGURER (never
+    /// the guardian) can call — pausing is autonomous and fast; resuming
+    /// requires a human decision.
+    event Resumed(PoolId indexed poolId, address indexed by, uint256 timestamp);
+
+    // ─────────────────────────────────────────────────────────────────────
     // Constants
     // ─────────────────────────────────────────────────────────────────────
 
@@ -114,6 +152,17 @@ contract BallastHook is BaseHook {
     /// update before treating the feed as stale and refusing to apply a
     /// Signal-1-driven surcharge for that swap.
     uint256 public constant DEFAULT_MAX_ORACLE_STALENESS = 3600; // 1 hour
+
+    /// @notice Minimum delay between queuing a CHANGE to an already-live
+    /// pool's oracle feed and that change actually taking effect. Exists
+    /// specifically to close the trust gap flagged in our own security
+    /// review (Workshop 13 pass): a configurer with instant, unilateral
+    /// oracle-change power could otherwise briefly point at a manipulated
+    /// feed to bias a specific swap's classification. The INITIAL
+    /// configuration of a pool (see `configurePool`) is exempt — there is
+    /// no existing trust relationship to protect before a pool has ever
+    /// been configured, and the pool is unusable until it is.
+    uint256 public constant ORACLE_CHANGE_TIMELOCK = 24 hours;
 
     /// @notice Basis-point denominator used throughout this contract.
     uint256 internal constant BPS_DENOMINATOR = 10_000;
@@ -198,6 +247,60 @@ contract BallastHook is BaseHook {
     /// price feed and staleness window for that pool.
     mapping(PoolId poolId => address configurer) public poolConfigurer;
 
+    /// @notice The address authorized to pause a pool as a fail-safe
+    /// (intended to be a Reactive Network callback contract watching for
+    /// oracle-related anomalies — see OracleGuardian docs). Deliberately
+    /// separate from `poolConfigurer`: the guardian can only ever PAUSE,
+    /// never resume, never change the oracle, never withdraw funds. A
+    /// guardian that could do more than pause would just be a second
+    /// admin key, not a safety mechanism.
+    mapping(PoolId poolId => address guardianAddr) public guardian;
+
+    /// @notice Whether a pool is currently paused. While paused,
+    /// `beforeSwap` skips BOTH signals entirely and falls back to
+    /// `BASE_FEE` — neutralizing exposure to whatever triggered the
+    /// pause (e.g. a compromised or anomalous oracle) rather than fully
+    /// halting the pool. Trading continues at a safe, signal-independent
+    /// fee; only the toxicity-detection logic is suspended.
+    mapping(PoolId poolId => bool isPaused) public paused;
+
+    /// @notice A queued (not-yet-effective) oracle change for an
+    /// already-configured pool. Applied via `applyPendingOracleChange`
+    /// once `pendingFeedEffectiveAt` has passed. Zero address means no
+    /// change is currently queued.
+    mapping(PoolId poolId => address feed) public pendingFeed;
+    mapping(PoolId poolId => bool matches) public pendingOracleMatchesPoolDirection;
+    mapping(PoolId poolId => uint256 staleness) public pendingStaleness;
+    mapping(PoolId poolId => uint256 timestamp) public pendingFeedEffectiveAt;
+
+    /// @notice Security: top-of-block snapshot of the pool's own price,
+    /// used for Signal 1's comparison instead of the live, same-transaction
+    /// price. Without this, an attacker could manipulate the pool's price
+    /// with an earlier transaction in the same block (e.g. via a flash
+    /// loan), then have a later transaction's Signal 1 check compare
+    /// against that already-manipulated price — potentially making a
+    /// genuinely toxic swap appear corrective. Snapshotting once per block
+    /// (the same top-of-block pattern taught for Nezlobin's directional
+    /// fee) means every swap within a block is judged against the price
+    /// that existed BEFORE that block's own activity could have moved it.
+    mapping(PoolId poolId => uint256 priceX18) public blockSnapshotPoolPriceX18;
+
+    /// @notice Security: top-of-block snapshot of Signal 2's baseline
+    /// impact, used for the excess-ratio comparison instead of the live,
+    /// continuously-updating baseline. Without this, an attacker could
+    /// send several artificially large "seed" swaps earlier in the same
+    /// block to inflate the baseline, making their actual toxic swap later
+    /// in that same block look normal by comparison. The underlying
+    /// baseline (`baselineImpactBps`) still updates normally after every
+    /// swap for FUTURE blocks' use — only the value used for THIS block's
+    /// excess-ratio comparisons is frozen at the block's start.
+    mapping(PoolId poolId => uint256 bps) public blockSnapshotBaselineImpactBps;
+
+    /// @notice The block number a pool's snapshot was last taken at. When
+    /// a new block begins, the next swap re-takes both snapshots before
+    /// using them, so each block gets its own frozen reference point.
+    mapping(PoolId poolId => uint256 blockNumber) public lastSnapshotBlock;
+
     /// @notice Signal 2's rolling baseline: an exponential moving average
     /// of this pool's own recent swap price-impact magnitude, in basis
     /// points. "Unusually large" is judged relative to THIS pool's own
@@ -276,6 +379,23 @@ contract BallastHook is BaseHook {
 
     /// @notice Configure the Chainlink reference feed for a pool. Callable
     /// only by whoever initialized the pool (see `_beforeInitialize`).
+    ///
+    /// SECURITY / TRUST MODEL: the INITIAL configuration of a pool (the
+    /// first time this is called for a given pool, before any feed has
+    /// ever been set) applies immediately — the pool is unusable until
+    /// configured, so there is no existing trust relationship to protect.
+    /// Every SUBSEQUENT call is treated as a CHANGE and is queued behind
+    /// `ORACLE_CHANGE_TIMELOCK` (24 hours) rather than applying instantly.
+    /// This directly closes the gap flagged in our Workshop 13 security
+    /// pass: a configurer with instant, unilateral oracle-change power
+    /// could otherwise briefly point at a manipulated feed to bias a
+    /// specific swap's classification, then revert it. With the timelock,
+    /// any change is publicly queued (see `OracleChangeQueued`) with a
+    /// real window for LPs, swappers, or an automated watchdog to notice
+    /// and react before it can take effect. This is a real structural
+    /// mitigation, not just an audit trail — the `PoolConfigured` event
+    /// still fires for every actual (initial or applied) configuration,
+    /// preserving full on-chain auditability either way.
     /// @param key The pool to configure.
     /// @param feed The Chainlink AggregatorV3 feed to use as the external
     ///        reference price for this pool.
@@ -296,16 +416,108 @@ contract BallastHook is BaseHook {
         require(msg.sender == poolConfigurer[poolId], "Ballast: not pool configurer");
         require(address(feed) != address(0), "Ballast: feed cannot be zero address");
 
-        priceFeeds[poolId] = feed;
-        oracleDirectionMatchesPool[poolId] = oracleMatchesPoolDirection;
-        maxOracleStaleness[poolId] = staleness;
+        if (address(priceFeeds[poolId]) == address(0)) {
+            // Initial configuration — applies immediately.
+            priceFeeds[poolId] = feed;
+            oracleDirectionMatchesPool[poolId] = oracleMatchesPoolDirection;
+            maxOracleStaleness[poolId] = staleness;
 
-        // Auto-read and cache each token's decimals, rather than trusting a
-        // manually-supplied value — removes an entire class of
-        // misconfiguration risk (a wrong decimals input would silently
-        // corrupt every fee decision this hook makes for the pool).
+            emit PoolConfigured(poolId, address(feed), oracleMatchesPoolDirection, staleness);
+
+            // Auto-read and cache each token's decimals, rather than
+            // trusting a manually-supplied value — removes an entire
+            // class of misconfiguration risk.
+            currency0Decimals[poolId] = _readDecimals(key.currency0);
+            currency1Decimals[poolId] = _readDecimals(key.currency1);
+        } else {
+            // Change to an already-configured pool — queued behind the
+            // timelock instead of applying instantly.
+            pendingFeed[poolId] = address(feed);
+            pendingOracleMatchesPoolDirection[poolId] = oracleMatchesPoolDirection;
+            pendingStaleness[poolId] = staleness;
+            uint256 effectiveAt = block.timestamp + ORACLE_CHANGE_TIMELOCK;
+            pendingFeedEffectiveAt[poolId] = effectiveAt;
+
+            emit OracleChangeQueued(poolId, address(feed), effectiveAt);
+        }
+    }
+
+    /// @notice Applies a previously-queued oracle change once its timelock
+    /// has elapsed. Deliberately callable by ANYONE, not just the
+    /// configurer — there is no reason to restrict who can apply a change
+    /// whose parameters were already fixed and made public when it was
+    /// queued; permissionless application means the change can't be
+    /// silently delayed by an unresponsive configurer either.
+    function applyPendingOracleChange(PoolKey calldata key) external {
+        PoolId poolId = key.toId();
+        uint256 effectiveAt = pendingFeedEffectiveAt[poolId];
+
+        require(effectiveAt != 0, "Ballast: no pending oracle change");
+        // Intentional use of block.timestamp: our timelock window is 24
+        // hours, far beyond any validator's ability to meaningfully
+        // manipulate block.timestamp (~seconds of drift), so this is not
+        // a viable manipulation vector here — same reasoning already
+        // applied to the oracle staleness check elsewhere in this file.
+        // forge-lint: disable-next-line(block-timestamp)
+        require(block.timestamp >= effectiveAt, "Ballast: timelock not yet elapsed");
+
+        address newFeed = pendingFeed[poolId];
+        priceFeeds[poolId] = IAggregatorV3(newFeed);
+        oracleDirectionMatchesPool[poolId] = pendingOracleMatchesPoolDirection[poolId];
+        maxOracleStaleness[poolId] = pendingStaleness[poolId];
+
+        // Re-read decimals defensively in case this is ever used to point
+        // at a differently-decimaled token pair's feed in the future
+        // (current usage keeps the same pool/token pair, so this is a
+        // no-op in practice, but costs little and removes an assumption).
         currency0Decimals[poolId] = _readDecimals(key.currency0);
         currency1Decimals[poolId] = _readDecimals(key.currency1);
+
+        // Clear the pending change.
+        pendingFeed[poolId] = address(0);
+        pendingFeedEffectiveAt[poolId] = 0;
+
+        emit PoolConfigured(poolId, newFeed, oracleDirectionMatchesPool[poolId], maxOracleStaleness[poolId]);
+        emit OracleChangeApplied(poolId, newFeed);
+    }
+
+    /// @notice Sets (or changes) the guardian address for a pool —
+    /// intended to be a Reactive Network callback contract (see
+    /// OracleGuardian docs) once deployed, but deliberately usable with
+    /// any address, including an EOA, so the pause mechanism itself can
+    /// be tested and used independently of the Reactive integration
+    /// being live. Callable only by the pool configurer.
+    function setGuardian(PoolKey calldata key, address newGuardian) external {
+        PoolId poolId = key.toId();
+        require(msg.sender == poolConfigurer[poolId], "Ballast: not pool configurer");
+        guardian[poolId] = newGuardian;
+        emit GuardianSet(poolId, newGuardian);
+    }
+
+    /// @notice Pauses a pool. Callable ONLY by that pool's configured
+    /// guardian — deliberately NOT by the configurer, NOT by an owner,
+    /// NOT by anyone else. This is intentionally the easiest, fastest
+    /// path in this entire contract: a real fail-safe must be cheap and
+    /// simple to trigger, or it fails at the one moment it matters most.
+    function guardianPause(PoolKey calldata key) external {
+        PoolId poolId = key.toId();
+        require(msg.sender == guardian[poolId], "Ballast: not the guardian");
+        paused[poolId] = true;
+        emit GuardianPaused(poolId, msg.sender, block.timestamp);
+    }
+
+    /// @notice Resumes a paused pool. Callable ONLY by the pool
+    /// CONFIGURER — deliberately NOT by the guardian. Pausing is
+    /// autonomous and immediate by design; resuming is not, and
+    /// deliberately requires a human decision that the underlying
+    /// concern has actually been addressed. A guardian that could both
+    /// pause and resume would not be a meaningfully independent check.
+    function resume(PoolKey calldata key) external {
+        PoolId poolId = key.toId();
+        require(msg.sender == poolConfigurer[poolId], "Ballast: not pool configurer");
+        require(paused[poolId], "Ballast: pool is not paused");
+        paused[poolId] = false;
+        emit Resumed(poolId, msg.sender, block.timestamp);
     }
 
     /// @notice Reads a currency's decimals, treating native ETH
@@ -328,10 +540,58 @@ contract BallastHook is BaseHook {
         returns (bytes4, BeforeSwapDelta, uint24)
     {
         PoolId poolId = key.toId();
+        _refreshBlockSnapshotIfNeeded(poolId, key);
         uint24 fee = _computeFee(poolId, key, params);
         uint24 feeWithFlag = fee | LPFeeLibrary.OVERRIDE_FEE_FLAG;
 
         return (this.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, feeWithFlag);
+    }
+
+    /// @notice Security: if this is the first swap seen for this pool in
+    /// the current block, freeze this block's reference snapshots (pool
+    /// price for Signal 1, baseline impact for Signal 2) BEFORE this
+    /// swap's own fee is computed. Since this is the first swap of the
+    /// block, the values captured here reflect state as it existed before
+    /// any activity in this block — including this very swap — could have
+    /// influenced it, closing the same-block manipulation window described
+    /// in the storage docs above. A no-op for every subsequent swap within
+    /// the same block, which all compare against this same frozen snapshot.
+    function _refreshBlockSnapshotIfNeeded(PoolId poolId, PoolKey calldata key) internal {
+        if (lastSnapshotBlock[poolId] == block.number) return;
+
+        (uint160 sqrtPriceX96,,,) = poolManager.getSlot0(poolId);
+        if (sqrtPriceX96 != 0) {
+            blockSnapshotPoolPriceX18[poolId] = _rawSqrtPriceToDecimalsCorrectedX18(poolId, sqrtPriceX96);
+        }
+        blockSnapshotBaselineImpactBps[poolId] = baselineImpactBps[poolId];
+        lastSnapshotBlock[poolId] = block.number;
+    }
+
+    /// @notice View-safe equivalent of "what Signal 1's reference price
+    /// would be if a real swap happened right now." If this block's
+    /// snapshot has already been taken (by an earlier real swap this
+    /// block), returns that frozen value — otherwise falls back to the
+    /// live price, since a real swap right now WOULD trigger a fresh
+    /// snapshot at that live value. This lets `previewFee`/`previewSignal2`
+    /// (both `view`, unable to write the snapshot themselves) give an
+    /// accurate preview without ever becoming stale, while real swaps via
+    /// `_beforeSwap` still get the actual persisted, gas-cheaper snapshot
+    /// read plus the security property of a single frozen value shared by
+    /// every swap within the same block.
+    function _effectivePoolPriceX18(PoolId poolId) internal view returns (uint256) {
+        if (lastSnapshotBlock[poolId] == block.number) {
+            return blockSnapshotPoolPriceX18[poolId];
+        }
+        return _getPoolPriceX18(poolId);
+    }
+
+    /// @notice View-safe equivalent for Signal 2's baseline comparison —
+    /// same reasoning as `_effectivePoolPriceX18` above.
+    function _effectiveBaselineImpactBps(PoolId poolId) internal view returns (uint256) {
+        if (lastSnapshotBlock[poolId] == block.number) {
+            return blockSnapshotBaselineImpactBps[poolId];
+        }
+        return baselineImpactBps[poolId];
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -452,6 +712,13 @@ contract BallastHook is BaseHook {
     /// (the standard sync -> transfer -> settle pattern for a hook acting
     /// on its own initiative within an already-unlocked context, per
     /// Workshop 1/8's flash-accounting discipline).
+    ///
+    /// SECURITY: reserve is zeroed BEFORE the external `donate()` and
+    /// `_settle()` calls (Checks-Effects-Interactions) — even if a
+    /// malicious token's `transfer()` implementation attempted to reenter
+    /// during `_settle()`, `pendingReserve0`/`pendingReserve1` are already
+    /// zero at that point, making a double-release impossible. Verified
+    /// during the Workshop 13 security pass, not incidental.
     function _releaseReserve(PoolKey calldata key, PoolId poolId) internal {
         uint256 amount0 = pendingReserve0[poolId];
         uint256 amount1 = pendingReserve1[poolId];
@@ -553,6 +820,18 @@ contract BallastHook is BaseHook {
         view
         returns (uint24 fee, uint256 impactBps, uint256 combinedScoreX18)
     {
+        // Guardian pause short-circuit: while paused, BOTH signals are
+        // skipped entirely — not just Signal 1 — and the pool falls back
+        // to BASE_FEE with zero toxicity score (so no reserve skim
+        // happens either). This deliberately neutralizes exposure to
+        // whatever triggered the pause (most likely an oracle-related
+        // concern) rather than only disabling the specific signal that
+        // uses the oracle, since a compromised trust assumption
+        // shouldn't be trusted to correctly scope its own blast radius.
+        if (paused[poolId]) {
+            return (BASE_FEE, 0, 0);
+        }
+
         IAggregatorV3 feed = priceFeeds[poolId];
 
         // Signal 2 runs regardless of whether an oracle is configured,
@@ -621,16 +900,27 @@ contract BallastHook is BaseHook {
 
     /// @notice Signal 2: compares this swap's expected price impact
     /// (computed via the pool's own real swap math, not an approximation)
-    /// against this specific pool's own recent baseline impact. A swap
-    /// causing disproportionate impact relative to how this pool normally
-    /// behaves is treated as toxic/exploitative, independent of Signal 1.
+    /// against this specific pool's TOP-OF-BLOCK baseline snapshot (see
+    /// `_refreshBlockSnapshotIfNeeded`). A swap causing disproportionate
+    /// impact relative to how this pool normally behaves is treated as
+    /// toxic/exploitative, independent of Signal 1.
+    ///
+    /// SECURITY NOTE: deliberately compares against
+    /// `blockSnapshotBaselineImpactBps` (frozen at block start) rather than
+    /// the live, continuously-updating `baselineImpactBps`. Without this,
+    /// an attacker could send several artificially large "seed" swaps
+    /// earlier in the same block to inflate the baseline, then have their
+    /// actual toxic swap later in that same block look normal by
+    /// comparison. The live baseline still updates normally after every
+    /// swap (see `_afterSwap`) — only the value used for THIS block's
+    /// comparisons is frozen.
     /// @return isExcessive True if impact exceeds EXCESS_MULTIPLIER_BPS
-    ///         times the pool's baseline.
+    ///         times the pool's block-start baseline.
     /// @return excessRatioX18 impactBps / baselineBps, at 1e18 fixed point
     ///         (0 if no baseline exists yet).
     /// @return impactBps This swap's own computed price impact, in basis
     ///         points — always returned (even when not "excessive") so it
-    ///         can be folded into the baseline EMA in `_afterSwap`.
+    ///         can be folded into the live baseline EMA in `_afterSwap`.
     function _signal2(PoolId poolId, PoolKey calldata, SwapParams calldata params)
         internal
         view
@@ -666,11 +956,12 @@ contract BallastHook is BaseHook {
         uint256 diffX18 = ratioX18 > 1e18 ? ratioX18 - 1e18 : 1e18 - ratioX18;
         impactBps = (diffX18 * 2 * BPS_DENOMINATOR) / 1e18;
 
-        uint256 baseline = baselineImpactBps[poolId];
+        uint256 baseline = _effectiveBaselineImpactBps(poolId);
         if (!baselineInitialized[poolId] || baseline == 0) {
-            // No meaningful baseline yet for this pool — treat as normal
-            // rather than flagging a pool's very first swaps as toxic
-            // before we have any real history to compare against.
+            // No meaningful baseline existed at the start of this block —
+            // treat as normal rather than flagging a pool's very first
+            // swaps as toxic before we have any real history to compare
+            // against.
             return (false, 0, impactBps);
         }
 
@@ -679,24 +970,35 @@ contract BallastHook is BaseHook {
         isExcessive = excessRatioX18 >= thresholdRatioX18;
     }
 
-    /// @notice Signal 1: compares the pool's current price against a live
-    /// Chainlink reference price, and determines whether this specific
-    /// swap is pushing the pool price further away from (toxic) or back
-    /// toward (corrective) the oracle price.
+    /// @notice Signal 1: compares the pool's TOP-OF-BLOCK price snapshot
+    /// (see `_refreshBlockSnapshotIfNeeded`) against a live Chainlink
+    /// reference price, and determines whether this specific swap is
+    /// pushing the pool price further away from (toxic) or back toward
+    /// (corrective) the oracle price.
+    ///
+    /// SECURITY NOTE: deliberately uses `blockSnapshotPoolPriceX18` rather
+    /// than reading the pool's live price directly. If this read the live,
+    /// same-transaction price, an attacker could manipulate the pool's
+    /// price with an earlier transaction in the same block, then have a
+    /// later, genuinely toxic transaction's Signal 1 check compare against
+    /// the already-manipulated price and be misclassified as corrective.
+    /// Using the price as it existed at the start of the block closes this
+    /// window, mirroring the same top-of-block pattern taught for
+    /// Nezlobin's directional fee.
     /// @return isToxic True if this swap is toxic per Signal 1.
     /// @return isCorrective True if this swap is corrective per Signal 1.
-    /// @return deviationBps The current |pool price - oracle price| /
-    ///         oracle price deviation, in basis points, BEFORE this swap
-    ///         executes. Used to scale the surcharge magnitude.
+    /// @return deviationBps The block-start |pool price - oracle price| /
+    ///         oracle price deviation, in basis points. Used to scale the
+    ///         surcharge magnitude.
     function _signal1(PoolId poolId, PoolKey calldata key, SwapParams calldata params, IAggregatorV3 feed)
         internal
         view
         returns (bool isToxic, bool isCorrective, uint256 deviationBps)
     {
         uint256 oraclePriceX18 = _getOraclePriceX18(poolId, feed);
-        uint256 poolPriceX18 = _getPoolPriceX18(poolId);
+        uint256 poolPriceX18 = _effectivePoolPriceX18(poolId);
 
-        if (poolPriceX18 == oraclePriceX18 || oraclePriceX18 == 0) {
+        if (poolPriceX18 == 0 || poolPriceX18 == oraclePriceX18 || oraclePriceX18 == 0) {
             return (false, false, 0);
         }
 
@@ -787,6 +1089,20 @@ contract BallastHook is BaseHook {
     /// @notice Reads the pool's current price from `sqrtPriceX96` (via
     /// StateLibrary) and converts it to the same 18-decimal,
     /// currency0-per-currency1 representation used by `_getOraclePriceX18`.
+    /// Only used to REFRESH the block snapshot (see
+    /// `_refreshBlockSnapshotIfNeeded`) — Signal 1 itself reads the frozen
+    /// snapshot, not this live value directly, as a defense against
+    /// same-block price manipulation (see storage docs above).
+    function _getPoolPriceX18(PoolId poolId) internal view returns (uint256) {
+        (uint160 sqrtPriceX96,,,) = poolManager.getSlot0(poolId);
+        if (sqrtPriceX96 == 0) return 0;
+        return _rawSqrtPriceToDecimalsCorrectedX18(poolId, sqrtPriceX96);
+    }
+
+    /// @notice Converts a raw `sqrtPriceX96` value into the same
+    /// 18-decimal, currency0-per-currency1 representation used throughout
+    /// this contract, correcting for the two currencies' decimal
+    /// difference.
     ///
     /// IMPORTANT: `sqrtPriceX96` encodes price in RAW (undecimalized) token
     /// units — i.e. (raw currency1 amount) / (raw currency0 amount), not
@@ -797,9 +1113,11 @@ contract BallastHook is BaseHook {
     /// it is comparable to a human-scale oracle price. Skipping this
     /// correction was an earlier bug in this contract — flagged and fixed
     /// before Signal 2 was built on top of it, rather than after.
-    function _getPoolPriceX18(PoolId poolId) internal view returns (uint256) {
-        (uint160 sqrtPriceX96,,,) = poolManager.getSlot0(poolId);
-
+    function _rawSqrtPriceToDecimalsCorrectedX18(PoolId poolId, uint160 sqrtPriceX96)
+        internal
+        view
+        returns (uint256)
+    {
         // rawPriceX18 = (sqrtPriceX96 / 2^96)^2, in RAW token-unit terms,
         // scaled to 18-decimal fixed point. Computed without overflow by
         // scaling before squaring: rawPriceX18 = (sqrtPriceX96^2 * 1e18) / 2^192
