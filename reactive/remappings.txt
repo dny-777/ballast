@@ -1,2 +1,2 @@
-reactive-lib-omni/=lib/reactive-lib-omni/
+reactive-lib/=lib/reactive-lib/src/
 forge-std/=lib/forge-std/src/

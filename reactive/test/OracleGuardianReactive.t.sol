@@ -1,18 +1,22 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.29;
+pragma solidity ^0.8.26;
 
-import {Test} from "forge-std/Test.sol";
+import {Test, Vm} from "forge-std/Test.sol";
 import {OracleGuardianReactive} from "../src/OracleGuardianReactive.sol";
-import {OracleGuardianCallback} from "../src/OracleGuardianCallback.sol";
-import {IReactive} from "reactive-lib-omni/src/interfaces/IReactive.sol";
+import {IReactive} from "reactive-lib/interfaces/IReactive.sol";
 import {MockSystemContract} from "./mocks/MockSystemContract.sol";
 
+/// @notice Reactive contracts genuinely deploy to TWO separate places with
+/// the same bytecode: the main Reactive Network (where SERVICE_ADDR has
+/// real code, so `vm` resolves false, and subscriptions fire) and the
+/// ReactVM (where SERVICE_ADDR has NO code, so `vm` resolves true, and
+/// react() is callable). We test both real behaviors by deploying two
+/// separate instances under each condition.
 contract OracleGuardianReactiveTest is Test {
-    address constant SYSTEM_ADDR = 0x0000000000000000000000000000000000fffFfF;
+    address constant SERVICE_ADDR = 0x0000000000000000000000000000000000fffFfF;
+    bytes32 constant CALLBACK_TOPIC = keccak256("Callback(uint256,address,uint64,bytes)");
 
-    OracleGuardianReactive guardian;
-    MockSystemContract mockSystem;
-
+    address callbackReceiver = address(0xCAFE);
     address hookAddr = address(0xA11CE);
     address oracleAddr = address(0xFEED);
     address currency0 = address(0);
@@ -20,27 +24,35 @@ contract OracleGuardianReactiveTest is Test {
     uint24 fee = 8_388_608; // DYNAMIC_FEE_FLAG
     int24 tickSpacing = 60;
 
-    function setUp() public {
-        // Deploy our mock at the real, hardcoded SYSTEM address the
-        // library expects, so AbstractReactive's calls to SYSTEM.subscribe
-        // and SYSTEM.requestCallbackV_1_0 resolve to our mock rather than
-        // reverting against an empty address — the same vm.etch technique
-        // used throughout our BallastHook tests for injecting known,
-        // controllable state at a specific address.
-        MockSystemContract impl = new MockSystemContract();
-        vm.etch(SYSTEM_ADDR, address(impl).code);
-        mockSystem = MockSystemContract(payable(SYSTEM_ADDR));
+    MockSystemContract mockSystem;
 
-        guardian = new OracleGuardianReactive(hookAddr, oracleAddr, currency0, currency1, fee, tickSpacing);
+    function setUp() public {
+        MockSystemContract impl = new MockSystemContract();
+        vm.etch(SERVICE_ADDR, address(impl).code);
+        mockSystem = MockSystemContract(payable(SERVICE_ADDR));
     }
 
-    // ─────────────────────────────────────────────────────────────────────
-    // Constructor: must subscribe to exactly the two event sources we
-    // designed for — proving the actual subscription calls happen, not
-    // just that the constructor doesn't revert.
-    // ─────────────────────────────────────────────────────────────────────
+    function _deployNetworkInstance() internal returns (OracleGuardianReactive) {
+        return new OracleGuardianReactive(
+            callbackReceiver, hookAddr, oracleAddr, currency0, currency1, fee, tickSpacing
+        );
+    }
+
+    /// @notice Deploys a "ReactVM instance" by temporarily removing
+    /// SERVICE_ADDR's code so `vm` resolves true at construction time,
+    /// matching the real ReactVM environment, then restores it.
+    function _deployVmInstance() internal returns (OracleGuardianReactive) {
+        vm.etch(SERVICE_ADDR, "");
+        OracleGuardianReactive guardian = new OracleGuardianReactive(
+            callbackReceiver, hookAddr, oracleAddr, currency0, currency1, fee, tickSpacing
+        );
+        vm.etch(SERVICE_ADDR, address(mockSystem).code);
+        return guardian;
+    }
 
     function test_constructor_subscribesToBothEventSources() public {
+        _deployNetworkInstance();
+
         assertEq(mockSystem.subscriptionCount(), 2);
 
         (uint256 chainId0, address contract0,,,,) = mockSystem.subscriptions(0);
@@ -52,132 +64,85 @@ contract OracleGuardianReactiveTest is Test {
         assertEq(contract1, oracleAddr, "Second subscription should watch the oracle feed");
     }
 
-    // ─────────────────────────────────────────────────────────────────────
-    // Deployment-order safety: react() must NOT revert and must NOT fire a
-    // callback before setDestinationCallback has been called — this is a
-    // real, designed state (see contract NatSpec), not an oversight.
-    // ─────────────────────────────────────────────────────────────────────
+    function test_callbackReceiver_isSetImmediatelyAndCorrectly() public {
+        OracleGuardianReactive networkInstance = _deployNetworkInstance();
+        assertEq(networkInstance.callbackReceiver(), callbackReceiver);
 
-    function test_react_beforeDestinationSet_doesNotFireCallback() public {
-        IReactive.LogRecord memory log = IReactive.LogRecord({
-            chainId: 11155111,
-            contractAddress: hookAddr,
-            topic0: uint256(keccak256("OracleChangeQueued(bytes32,address,uint256)")),
-            topic1: 0,
-            topic2: 0,
-            topic3: 0,
-            data: "",
-            blockNumber: 1,
-            opCode: 0,
-            blockHash: 0,
-            txHash: 0,
-            logIndex: 0
-        });
+        OracleGuardianReactive vmInstance = _deployVmInstance();
+        assertEq(
+            vmInstance.callbackReceiver(),
+            callbackReceiver,
+            "Immutable config must be identical across both instances"
+        );
+    }
 
-        vm.prank(SYSTEM_ADDR);
+    function test_react_onOracleChangeQueued_emitsCallback() public {
+        OracleGuardianReactive guardian = _deployVmInstance();
+
+        IReactive.LogRecord memory log = _makeLog(hookAddr, keccak256("OracleChangeQueued(bytes32,address,uint256)"), 0);
+
+        vm.recordLogs();
         guardian.react(log);
 
-        assertEq(mockSystem.callbackRequestCount(), 0, "Must not fire a callback before destination is configured");
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        bool found = false;
+        for (uint256 i = 0; i < logs.length; i++) {
+            if (logs[i].topics[0] == CALLBACK_TOPIC) {
+                found = true;
+                assertEq(uint256(logs[i].topics[1]), 11155111);
+                assertEq(address(uint160(uint256(logs[i].topics[2]))), callbackReceiver);
+            }
+        }
+        assertTrue(found, "Expected a Callback event to be emitted");
     }
 
-    // ─────────────────────────────────────────────────────────────────────
-    // setDestinationCallback: settable exactly once, by the owner only.
-    // ─────────────────────────────────────────────────────────────────────
+    function test_react_onAnomalousPriceJump_emitsCallback() public {
+        OracleGuardianReactive guardian = _deployVmInstance();
 
-    function test_setDestinationCallback_revertsForNonOwner() public {
-        vm.prank(address(0xBEEF));
-        vm.expectRevert(bytes("OracleGuardianReactive: not owner"));
-        guardian.setDestinationCallback(address(0xCAFE));
+        vm.recordLogs();
+        guardian.react(_makeLog(oracleAddr, keccak256("AnswerUpdated(int256,uint256,uint256)"), uint256(int256(3000 * 10 ** 8))));
+        assertFalse(_emittedCallback(), "First-ever price update should not trigger a false alarm");
+
+        vm.recordLogs();
+        guardian.react(_makeLog(oracleAddr, keccak256("AnswerUpdated(int256,uint256,uint256)"), uint256(int256(3400 * 10 ** 8))));
+        assertTrue(_emittedCallback(), "A >10% single-update jump should trigger the guardian");
     }
 
-    function test_setDestinationCallback_revertsIfAlreadySet() public {
-        guardian.setDestinationCallback(address(0xCAFE));
-        vm.expectRevert(bytes("OracleGuardianReactive: already set"));
-        guardian.setDestinationCallback(address(0xD00D));
+    function test_react_onNormalPriceMovement_doesNotEmitCallback() public {
+        OracleGuardianReactive guardian = _deployVmInstance();
+
+        vm.recordLogs();
+        guardian.react(_makeLog(oracleAddr, keccak256("AnswerUpdated(int256,uint256,uint256)"), uint256(int256(3000 * 10 ** 8))));
+
+        vm.recordLogs();
+        guardian.react(_makeLog(oracleAddr, keccak256("AnswerUpdated(int256,uint256,uint256)"), uint256(int256(3050 * 10 ** 8))));
+        assertFalse(_emittedCallback(), "A small, ordinary price movement must not trigger a false alarm");
     }
 
-    // ─────────────────────────────────────────────────────────────────────
-    // Trigger 1: an OracleChangeQueued event must fire a callback
-    // unconditionally, once destination is configured.
-    // ─────────────────────────────────────────────────────────────────────
-
-    function test_react_onOracleChangeQueued_firesCallback() public {
-        guardian.setDestinationCallback(address(0xCAFE));
-
-        IReactive.LogRecord memory log = IReactive.LogRecord({
-            chainId: 11155111,
-            contractAddress: hookAddr,
-            topic0: uint256(keccak256("OracleChangeQueued(bytes32,address,uint256)")),
-            topic1: 0,
-            topic2: 0,
-            topic3: 0,
+    function _makeLog(address contractAddr, bytes32 topic0, uint256 topic1) internal pure returns (IReactive.LogRecord memory) {
+        return IReactive.LogRecord({
+            chain_id: 11155111,
+            _contract: contractAddr,
+            topic_0: uint256(topic0),
+            topic_1: topic1,
+            topic_2: 0,
+            topic_3: 0,
             data: "",
-            blockNumber: 1,
-            opCode: 0,
-            blockHash: 0,
-            txHash: 0,
-            logIndex: 0
+            block_number: 1,
+            op_code: 0,
+            block_hash: 0,
+            tx_hash: 0,
+            log_index: 0
         });
-
-        vm.prank(SYSTEM_ADDR);
-        guardian.react(log);
-
-        assertEq(mockSystem.callbackRequestCount(), 1);
-        (uint256 chainId, address recipient,,) = mockSystem.callbackRequests(0);
-        assertEq(chainId, 11155111);
-        assertEq(recipient, address(0xCAFE));
     }
 
-    // ─────────────────────────────────────────────────────────────────────
-    // Trigger 2: an anomalous single-update price jump must fire a
-    // callback — and, critically, a NORMAL price update must NOT.
-    // ─────────────────────────────────────────────────────────────────────
-
-    function test_react_onAnomalousPriceJump_firesCallback() public {
-        guardian.setDestinationCallback(address(0xCAFE));
-
-        // First update establishes the baseline — no prior price to
-        // compare against, so no callback should fire yet.
-        _sendAnswerUpdated(int256(3000 * 10 ** 8));
-        assertEq(mockSystem.callbackRequestCount(), 0, "First-ever price update should not trigger a false alarm");
-
-        // A jump from 3000 to 3400 is a ~13.3% single-update change,
-        // above our 10% ANOMALY_THRESHOLD_BPS — should trigger.
-        _sendAnswerUpdated(int256(3400 * 10 ** 8));
-        assertEq(mockSystem.callbackRequestCount(), 1, "A >10% single-update jump should trigger the guardian");
-    }
-
-    function test_react_onNormalPriceMovement_doesNotFireCallback() public {
-        guardian.setDestinationCallback(address(0xCAFE));
-
-        _sendAnswerUpdated(int256(3000 * 10 ** 8));
-        // A move from 3000 to 3050 is under 2% — well below threshold.
-        _sendAnswerUpdated(int256(3050 * 10 ** 8));
-
-        assertEq(mockSystem.callbackRequestCount(), 0, "A small, ordinary price movement must not trigger a false alarm");
-    }
-
-    function _sendAnswerUpdated(int256 price) internal {
-        IReactive.LogRecord memory log = IReactive.LogRecord({
-            chainId: 11155111,
-            contractAddress: oracleAddr,
-            topic0: uint256(keccak256("AnswerUpdated(int256,uint256,uint256)")),
-            // Safe: test-only prices are always small positive values;
-            // the real contract reverses this cast identically via
-            // int256(log_.topic1), so this must round-trip correctly.
-            // forge-lint: disable-next-line(unsafe-typecast)
-            topic1: uint256(price),
-            topic2: 0,
-            topic3: 0,
-            data: "",
-            blockNumber: 1,
-            opCode: 0,
-            blockHash: 0,
-            txHash: 0,
-            logIndex: 0
-        });
-
-        vm.prank(SYSTEM_ADDR);
-        guardian.react(log);
+    function _emittedCallback() internal returns (bool) {
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        for (uint256 i = 0; i < logs.length; i++) {
+            if (logs[i].topics[0] == CALLBACK_TOPIC) {
+                return true;
+            }
+        }
+        return false;
     }
 }

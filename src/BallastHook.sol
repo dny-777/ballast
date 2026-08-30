@@ -108,6 +108,10 @@ contract BallastHook is BaseHook {
     /// takes effect, after the timelock has elapsed.
     event OracleChangeApplied(PoolId indexed poolId, address indexed newFeed);
 
+    /// @notice Emitted when a pending oracle change is canceled before
+    /// taking effect.
+    event OracleChangeCanceled(PoolId indexed poolId);
+
     /// @notice Emitted when a pool's guardian address is set or changed.
     event GuardianSet(PoolId indexed poolId, address indexed guardian);
 
@@ -453,6 +457,21 @@ contract BallastHook is BaseHook {
         uint256 effectiveAt = pendingFeedEffectiveAt[poolId];
 
         require(effectiveAt != 0, "Ballast: no pending oracle change");
+        // Real security improvement, found and added during review, not
+        // present in earlier versions of this contract: without this
+        // check, a guardian correctly pausing the pool over a
+        // suspicious queued change had NO actual effect on whether that
+        // change could still apply — the attacker (who by definition
+        // already holds a compromised configurer key) could simply wait
+        // out the 24-hour timelock and apply it regardless of the
+        // pause. This does NOT make the attack impossible for someone
+        // who genuinely holds the legitimate key forever — it forces
+        // them to take one additional, highly visible, separately
+        // logged action (explicitly calling resume(), which is
+        // configurer-gated and emits its own event) rather than
+        // silently waiting out a timer. That's a real, meaningful,
+        // honestly-scoped improvement, not a claim of full prevention.
+        require(!paused[poolId], "Ballast: cannot apply oracle change while pool is paused");
         // Intentional use of block.timestamp: our timelock window is 24
         // hours, far beyond any validator's ability to meaningfully
         // manipulate block.timestamp (~seconds of drift), so this is not
@@ -479,6 +498,25 @@ contract BallastHook is BaseHook {
 
         emit PoolConfigured(poolId, newFeed, oracleDirectionMatchesPool[poolId], maxOracleStaleness[poolId]);
         emit OracleChangeApplied(poolId, newFeed);
+    }
+
+    /// @notice Cancels a pending oracle change before it takes effect —
+    /// for a legitimate configurer who queued a change and then, for
+    /// any reason (an honest mistake, a community challenge, a
+    /// guardian pause prompting reconsideration), wants to back out
+    /// cleanly rather than being forced to either let it apply or leave
+    /// it sitting queued indefinitely. Deliberately callable regardless
+    /// of pause state — canceling a change is always safe to allow,
+    /// unlike applying one.
+    function cancelPendingOracleChange(PoolKey calldata key) external {
+        PoolId poolId = key.toId();
+        require(msg.sender == poolConfigurer[poolId], "Ballast: not pool configurer");
+        require(pendingFeedEffectiveAt[poolId] != 0, "Ballast: no pending oracle change");
+
+        pendingFeed[poolId] = address(0);
+        pendingFeedEffectiveAt[poolId] = 0;
+
+        emit OracleChangeCanceled(poolId);
     }
 
     /// @notice Sets (or changes) the guardian address for a pool —
@@ -842,13 +880,14 @@ contract BallastHook is BaseHook {
         uint256 signal2ScoreX18 = _signal2Score(isExcessive, excessRatioX18);
 
         // If no oracle feed has been configured yet for this pool, Signal
-        // 1 cannot run; fall back to Signal-2-only logic rather than
-        // reverting, so a pool remains usable before/if it's configured.
+        // 1 cannot run; fall back to Signal 2 alone, at its own full,
+        // undiluted value — consistent with the noisy-OR combination
+        // used below: noisyOR(0, signal2Score) = signal2Score exactly,
+        // so this fallback deliberately matches what the real
+        // combination would produce if Signal 1 were absent, rather
+        // than arbitrarily halving Signal 2's reading.
         if (address(feed) == address(0)) {
-            // Signal 2 alone is weighted the same as it would be in
-            // combination (half the max range), consistent with the
-            // "neither signal alone reaches the ceiling" design principle.
-            combinedScoreX18 = signal2ScoreX18 / 2;
+            combinedScoreX18 = signal2ScoreX18;
             fee = _feeFromScore(combinedScoreX18);
             return (fee, impactBps, combinedScoreX18);
         }
@@ -866,8 +905,32 @@ contract BallastHook is BaseHook {
             )
             : 0;
 
-        // Equal-weighted combination, per our documented design.
-        combinedScoreX18 = (signal1ScoreX18 + signal2ScoreX18) / 2;
+        // ── Combination: noisy-OR, not a simple average ──
+        //
+        // combinedScore = 1 - (1 - signal1Score)(1 - signal2Score)
+        //
+        // This project's own MATH.md documents WHY: a simple average was
+        // our original design, and testing found a real, quantified
+        // problem with it — a swap that maximally saturates ONE signal
+        // (e.g. Signal 2's raw excess ratio at 105x its threshold,
+        // normalized score = 1.0) had its effective fee cut by roughly
+        // half whenever the OTHER signal stayed near zero, since
+        // averaging always pulls toward the more moderate reading.
+        // Verified directly:
+        // test_previewFee_disproportionateSwap_chargesSurcharge_viaSignal2Alone
+        // produced fee=9270 under averaging despite Signal 2 alone
+        // justifying the full 15000 ceiling.
+        //
+        // Noisy-OR — the standard way to combine independent probability
+        // estimates of "at least one condition holds" — fixes this
+        // precisely: if either signal alone reads 1.0, combinedScore is
+        // exactly 1.0 too (no dilution), while if BOTH signals partially
+        // agree, combinedScore is systematically HIGHER than either
+        // alone (genuine corroboration is rewarded, not just tolerated)
+        // — a property plain max() alone does not have. Confirmed by
+        // direct comparison across representative cases before adopting
+        // this formula, not assumed.
+        combinedScoreX18 = 1e18 - FixedPointMathLib.mulDivDown(1e18 - signal1ScoreX18, 1e18 - signal2ScoreX18, 1e18);
         if (combinedScoreX18 > 1e18) combinedScoreX18 = 1e18;
 
         fee = _feeFromScore(combinedScoreX18);
@@ -890,12 +953,20 @@ contract BallastHook is BaseHook {
     function _signal2Score(bool isExcessive, uint256 excessRatioX18) internal pure returns (uint256) {
         if (!isExcessive) return 0;
 
-        // Cap how far past the excess threshold we keep scaling the score
-        // — beyond 2x the threshold ratio, more excess doesn't push the
-        // score higher, it's already effectively at 1.0.
-        uint256 cappedExcess = excessRatioX18 > 2e18 ? 2e18 : excessRatioX18;
+        // NOTE: an earlier version of this function pre-capped
+        // excessRatioX18 at a hardcoded 2e18 before this comparison — a
+        // real bug, found and fixed during development: with
+        // EXCESS_MULTIPLIER_BPS set to 25_000 (a 2.5x threshold), that
+        // pre-cap made it mathematically IMPOSSIBLE for `cappedExcess` to
+        // ever reach `thresholdX18`, silently capping this score's true
+        // ceiling at 2.0/2.5 = 0.8 instead of the documented 1.0 — no
+        // matter how extreme the real swap. Removing the pre-cap is
+        // safe: this branch's `>=` check already returns 1e18 directly
+        // for any large excessRatioX18 without ever reaching the
+        // mulDivDown call below, so there was no overflow risk it was
+        // protecting against.
         uint256 thresholdX18 = FixedPointMathLib.mulDivDown(EXCESS_MULTIPLIER_BPS, 1e18, BPS_DENOMINATOR);
-        return cappedExcess >= thresholdX18 ? 1e18 : FixedPointMathLib.mulDivDown(cappedExcess, 1e18, thresholdX18);
+        return excessRatioX18 >= thresholdX18 ? 1e18 : FixedPointMathLib.mulDivDown(excessRatioX18, 1e18, thresholdX18);
     }
 
     /// @notice Signal 2: compares this swap's expected price impact

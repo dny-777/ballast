@@ -1,0 +1,7 @@
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib", "node_modules"]
+evm_version = "cancun"
+optimizer = true
+optimizer_runs = 800

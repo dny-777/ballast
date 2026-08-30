@@ -1,0 +1,24 @@
+{
+  "claimData": {
+    "provider": "http",
+    "parameters": "{\"body\":\"\",\"headers\":{\"User-Agent\":\"reclaim/0.0.1\",\"accept\":\"application/json\"},\"method\":\"GET\",\"responseMatches\":[{\"type\":\"regex\",\"value\":\"\\\"ethereum\\\":\\\\{\\\"usd\\\":(?<price>[\\\\d.]+)\\\\}\"}],\"responseRedactions\":[{\"regex\":\"\\\"ethereum\\\":\\\\{\\\"usd\\\":(?<price>[\\\\d.]+)\\\\}\"}],\"url\":\"https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd\"}",
+    "owner": "0x8219e08e6ebba8ad72ef201f84e6e788a096af03",
+    "timestampS": 1788037003,
+    "context": "{\"extractedParameters\":{\"price\":\"2453.1\"},\"providerHash\":\"0x5dce30bf220a36eaeae24a953a805f7a8ef81141e37407b9e17b31289e158b7c\"}",
+    "identifier": "0x304caafc3d9b019631341d1222128caeea21029f41107a64fee0786df0400934",
+    "epoch": 1
+  },
+  "identifier": "0x304caafc3d9b019631341d1222128caeea21029f41107a64fee0786df0400934",
+  "signatures": [
+    "0xc66bd34cec546f0f36eb0a71f6f55ff518a55d9426a3153552f69327333b38f84558042f3ad4acb8617ce1c5a73385561782745d236b84159ddb5971febfa4df1b"
+  ],
+  "extractedParameterValues": {
+    "price": "2453.1"
+  },
+  "witnesses": [
+    {
+      "id": "0x244897572368eadf65bfbc5aec98d8e5443a9072",
+      "url": "wss://attestor.reclaimprotocol.org:444/ws"
+    }
+  ]
+}

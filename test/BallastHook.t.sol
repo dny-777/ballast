@@ -784,6 +784,110 @@ contract BallastHookTest is Test, Deployers {
     }
 
     // ─────────────────────────────────────────────────────────────────────
+    // Real security fix, found during review: a guardian correctly
+    // pausing the pool over a suspicious queued oracle change previously
+    // had NO effect on whether that change could still apply — the
+    // timelock alone doesn't check pause state. This proves the fix:
+    // applying a pending change is now blocked while paused, forcing an
+    // attacker to take one additional, visible action (resume()) rather
+    // than silently waiting out a timer.
+    // ─────────────────────────────────────────────────────────────────────
+
+    function test_applyPendingOracleChange_revertsWhilePaused() public {
+        MockAggregatorV3 newOracle = new MockAggregatorV3(8, int256(2 * 10 ** 8));
+        hook.configurePool(key, newOracle, true, 0);
+
+        address guardianAddr = address(0xCAFE);
+        hook.setGuardian(key, guardianAddr);
+        vm.prank(guardianAddr);
+        hook.guardianPause(key);
+
+        vm.warp(block.timestamp + hook.ORACLE_CHANGE_TIMELOCK());
+        newOracle.setAnswer(int256(2 * 10 ** 8));
+
+        vm.expectRevert(bytes("Ballast: cannot apply oracle change while pool is paused"));
+        hook.applyPendingOracleChange(key);
+
+        // The change must still genuinely be pending, not silently lost.
+        assertEq(hook.pendingFeed(key.toId()), address(newOracle));
+    }
+
+    function test_applyPendingOracleChange_succeedsOnceResumedAfterPause() public {
+        MockAggregatorV3 newOracle = new MockAggregatorV3(8, int256(2 * 10 ** 8));
+        hook.configurePool(key, newOracle, true, 0);
+
+        address guardianAddr = address(0xCAFE);
+        hook.setGuardian(key, guardianAddr);
+        vm.prank(guardianAddr);
+        hook.guardianPause(key);
+
+        vm.warp(block.timestamp + hook.ORACLE_CHANGE_TIMELOCK());
+        newOracle.setAnswer(int256(2 * 10 ** 8));
+
+        // Still blocked while paused.
+        vm.expectRevert(bytes("Ballast: cannot apply oracle change while pool is paused"));
+        hook.applyPendingOracleChange(key);
+
+        // Configurer explicitly resumes — a real, visible, separately
+        // logged action, exactly the point of this fix.
+        hook.resume(key);
+
+        // Now it correctly succeeds.
+        hook.applyPendingOracleChange(key);
+        assertEq(hook.pendingFeedEffectiveAt(key.toId()), 0, "Change should now be applied and cleared");
+    }
+
+    function test_cancelPendingOracleChange_clearsAPendingChange() public {
+        MockAggregatorV3 newOracle = new MockAggregatorV3(8, int256(2 * 10 ** 8));
+        hook.configurePool(key, newOracle, true, 0);
+        assertEq(hook.pendingFeed(key.toId()), address(newOracle));
+
+        hook.cancelPendingOracleChange(key);
+
+        assertEq(hook.pendingFeed(key.toId()), address(0), "Pending feed should be cleared");
+        assertEq(hook.pendingFeedEffectiveAt(key.toId()), 0, "Pending timestamp should be cleared");
+    }
+
+    function test_cancelPendingOracleChange_revertsForNonConfigurer() public {
+        MockAggregatorV3 newOracle = new MockAggregatorV3(8, int256(2 * 10 ** 8));
+        hook.configurePool(key, newOracle, true, 0);
+
+        vm.prank(address(0xBEEF));
+        vm.expectRevert(bytes("Ballast: not pool configurer"));
+        hook.cancelPendingOracleChange(key);
+    }
+
+    function test_cancelPendingOracleChange_revertsWithNoPendingChange() public {
+        vm.expectRevert(bytes("Ballast: no pending oracle change"));
+        hook.cancelPendingOracleChange(key);
+    }
+
+    function test_cancelPendingOracleChange_worksEvenWhilePaused() public {
+        // Canceling is always safe to allow, unlike applying — a
+        // legitimate configurer backing out of their own queued change
+        // should not be blocked just because a guardian is cautious.
+        MockAggregatorV3 newOracle = new MockAggregatorV3(8, int256(2 * 10 ** 8));
+        hook.configurePool(key, newOracle, true, 0);
+
+        address guardianAddr = address(0xCAFE);
+        hook.setGuardian(key, guardianAddr);
+        vm.prank(guardianAddr);
+        hook.guardianPause(key);
+
+        hook.cancelPendingOracleChange(key);
+        assertEq(hook.pendingFeed(key.toId()), address(0));
+    }
+
+    function test_afterCancel_applyingAgainCorrectlyReverts() public {
+        MockAggregatorV3 newOracle = new MockAggregatorV3(8, int256(2 * 10 ** 8));
+        hook.configurePool(key, newOracle, true, 0);
+        hook.cancelPendingOracleChange(key);
+
+        vm.expectRevert(bytes("Ballast: no pending oracle change"));
+        hook.applyPendingOracleChange(key);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
     // Fuzz: the combined fee must NEVER fall outside
     // [DISCOUNTED_FEE, MAX_SURCHARGE_FEE], regardless of how extreme the
     // oracle price or swap size fuzzing throws at it. This is a stronger

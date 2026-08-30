@@ -2,22 +2,19 @@
   "../lib/forge-std": {
     "rev": "bf647bd6046f2f7da30d0c2bf435e5c76a780c1b"
   },
-  "../lib/reactive-lib-omni": {
-    "rev": "3ade0dcf1d27e67e5783ef807e73a1b9e0c0cce8"
-  },
   "../lib/v4-hooks-public": {
     "rev": "f2aa843e266f8f9b34fdaf94ffb72eda5d9204f9"
   },
   "lib/forge-std": {
+    "rev": "bf647bd6046f2f7da30d0c2bf435e5c76a780c1b"
+  },
+  "lib/reactive-lib": {
     "tag": {
-      "name": "v1.16.2",
-      "rev": "bf647bd6046f2f7da30d0c2bf435e5c76a780c1b"
+      "name": "v0.2.0",
+      "rev": "d664678a7d86204c9391af4cedfd5ae0b0b904e4"
     }
   },
   "lib/reactive-lib-omni": {
-    "tag": {
-      "name": "v0.1.0",
-      "rev": "3ade0dcf1d27e67e5783ef807e73a1b9e0c0cce8"
-    }
+    "rev": "3ade0dcf1d27e67e5783ef807e73a1b9e0c0cce8"
   }
 }
