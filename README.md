@@ -2,6 +2,8 @@
 
 **Two readings. When they disagree, that's the alarm.**
 
+![Ballast](assets/banner.svg)
+
 A Uniswap v4 hook that prices toxic order flow directionally, taxes just-in-time (JIT) liquidity, and backs both with a three-layer trust stack — one of those layers a live, cryptographically-verified price witness independent of any single oracle. Four real, independently-tested defenses, in one contract.
 
 [![Uniswap v4](https://img.shields.io/badge/Uniswap-v4%20hook-FF007A.svg?logo=uniswap)](https://docs.uniswap.org/contracts/v4/overview)
