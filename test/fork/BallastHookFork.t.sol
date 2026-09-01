@@ -43,7 +43,7 @@ contract BallastHookForkTest is Test {
         require(bytes(rpcUrl).length > 0, "Set SEPOLIA_RPC_URL to run fork tests");
         vm.createSelectFork(rpcUrl);
 
-        hook = BallastHook(HOOK);
+        hook = BallastHook(payable(HOOK));
         key = PoolKey({
             currency0: Currency.wrap(address(0)),
             currency1: Currency.wrap(DEMO_TOKEN),

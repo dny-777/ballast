@@ -37,10 +37,12 @@ contract BallastHookTest is Test, Deployers {
         // deployment needs the actual HookMiner (tracked separately).
         uint160 flags = uint160(
             Hooks.BEFORE_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG
+                | Hooks.BEFORE_ADD_LIQUIDITY_FLAG | Hooks.AFTER_REMOVE_LIQUIDITY_FLAG
+                | Hooks.AFTER_REMOVE_LIQUIDITY_RETURNS_DELTA_FLAG
         );
         address hookAddress = address(flags);
         deployCodeTo("BallastHook.sol:BallastHook", abi.encode(manager), hookAddress);
-        hook = BallastHook(hookAddress);
+        hook = BallastHook(payable(hookAddress));
 
         // Initialize a pool with DYNAMIC_FEE_FLAG (required by our
         // _beforeInitialize gate) instead of a fixed fee, at 1:1 price.
@@ -255,13 +257,15 @@ contract BallastHookTest is Test, Deployers {
         // hook already attached to `key` in setUp().
         uint160 flags2 = uint160(
             Hooks.BEFORE_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG
+                | Hooks.BEFORE_ADD_LIQUIDITY_FLAG | Hooks.AFTER_REMOVE_LIQUIDITY_FLAG
+                | Hooks.AFTER_REMOVE_LIQUIDITY_RETURNS_DELTA_FLAG
         );
         // Offset into a high bit well above the flag region (flags occupy
         // only the lowest ~14 bits) so we get a distinct address without
         // corrupting any of the required permission-flag bits.
         address hook2Address = address(uint160(flags2) | (1 << 19));
         deployCodeTo("BallastHook.sol:BallastHook", abi.encode(manager), hook2Address);
-        BallastHook hook2 = BallastHook(hook2Address);
+        BallastHook hook2 = BallastHook(payable(hook2Address));
 
         (PoolKey memory decimalsKey,) =
             initPool(d0, d1, hook2, LPFeeLibrary.DYNAMIC_FEE_FLAG, SQRT_PRICE_1_1);
@@ -781,6 +785,119 @@ contract BallastHookTest is Test, Deployers {
     function test_applyPendingOracleChange_revertsWithNoPendingChange() public {
         vm.expectRevert(bytes("Ballast: no pending oracle change"));
         hook.applyPendingOracleChange(key);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // emergencyPause — a real gap found by comparing against another
+    // real UHI project's explicit feature list, which had a general
+    // admin circuit breaker independent of any specific automated
+    // trigger. Symmetric with resume(): same access control, same
+    // pool-scoped effect, but for the configurer to trigger a pause
+    // directly, not just lift one.
+    // ─────────────────────────────────────────────────────────────────────
+
+    function test_emergencyPause_succeedsForConfigurer() public {
+        hook.emergencyPause(key);
+        assertTrue(hook.paused(key.toId()), "Pool should genuinely be paused");
+    }
+
+    function test_emergencyPause_revertsForNonConfigurer() public {
+        vm.prank(address(0xBEEF));
+        vm.expectRevert(bytes("Ballast: not pool configurer"));
+        hook.emergencyPause(key);
+    }
+
+    function test_emergencyPause_revertsIfAlreadyPaused() public {
+        hook.emergencyPause(key);
+        vm.expectRevert(bytes("Ballast: pool is already paused"));
+        hook.emergencyPause(key);
+    }
+
+    function test_emergencyPause_worksIndependentlyOfGuardian() public {
+        // No guardian is even configured — confirming this circuit
+        // breaker doesn't depend on the guardian mechanism at all.
+        hook.emergencyPause(key);
+        assertTrue(hook.paused(key.toId()));
+    }
+
+    function test_afterEmergencyPause_configurerCanResumeNormally() public {
+        hook.emergencyPause(key);
+        hook.resume(key);
+        assertFalse(hook.paused(key.toId()), "Configurer should be able to resume exactly as with a guardian pause");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // REAL VULNERABILITY, found on final review: setGuardian() has NO
+    // timelock at all, unlike every other trust-affecting change in
+    // this contract. This proves the real, concrete consequence: a
+    // compromised configurer can instantly swap out the real guardian
+    // for a useless one, completely disabling BOTH OracleGuardian and
+    // ZKPriceGuardian, BEFORE even attempting a malicious oracle
+    // change — meaning neither safety layer ever gets a chance to
+    // fire at all, not just "outraced" the way the earlier
+    // apply-while-paused finding described.
+    // ─────────────────────────────────────────────────────────────────────
+
+    function test_VULNERABILITY_FIXED_guardianChangesAreNowTimelockedNotInstant() public {
+        address realGuardian = address(0xC0FFEE);
+        hook.setGuardian(key, realGuardian); // first-ever assignment — correctly immediate
+        assertEq(hook.guardian(key.toId()), realGuardian);
+
+        // A compromised configurer attempts the exact same attack as
+        // before: instantly swap out the real guardian.
+        address uselessGuardian = address(0xDEAD);
+        hook.setGuardian(key, uselessGuardian);
+
+        // FIXED: the real guardian is still genuinely registered and
+        // still genuinely able to protect the pool — the malicious
+        // change is only QUEUED, not applied.
+        assertEq(hook.guardian(key.toId()), realGuardian, "The real guardian must remain active during the timelock");
+
+        // The real guardian can still successfully pause, proving its
+        // protection was never actually disabled.
+        vm.prank(realGuardian);
+        hook.guardianPause(key);
+        assertTrue(hook.paused(key.toId()), "The real guardian's protection must still genuinely work");
+    }
+
+    function test_guardianChange_appliesOnlyAfterTimelockElapses() public {
+        address realGuardian = address(0xC0FFEE);
+        hook.setGuardian(key, realGuardian);
+
+        address newGuardian = address(0xBEEF);
+        hook.setGuardian(key, newGuardian);
+
+        vm.expectRevert(bytes("Ballast: timelock not yet elapsed"));
+        hook.applyPendingGuardianChange(key);
+
+        vm.warp(block.timestamp + hook.ORACLE_CHANGE_TIMELOCK());
+        hook.applyPendingGuardianChange(key);
+        assertEq(hook.guardian(key.toId()), newGuardian, "The change should genuinely apply once the timelock elapses");
+    }
+
+    function test_guardianChange_blockedWhilePaused() public {
+        address realGuardian = address(0xC0FFEE);
+        hook.setGuardian(key, realGuardian);
+        vm.prank(realGuardian);
+        hook.guardianPause(key);
+
+        hook.setGuardian(key, address(0xBEEF));
+        vm.warp(block.timestamp + hook.ORACLE_CHANGE_TIMELOCK());
+
+        vm.expectRevert(bytes("Ballast: cannot apply guardian change while pool is paused"));
+        hook.applyPendingGuardianChange(key);
+    }
+
+    function test_cancelPendingGuardianChange_worksForConfigurer() public {
+        hook.setGuardian(key, address(0xC0FFEE));
+        hook.setGuardian(key, address(0xBEEF));
+
+        hook.cancelPendingGuardianChange(key);
+
+        vm.warp(block.timestamp + hook.ORACLE_CHANGE_TIMELOCK());
+        vm.expectRevert(bytes("Ballast: no pending guardian change"));
+        hook.applyPendingGuardianChange(key);
+        assertEq(hook.guardian(key.toId()), address(0xC0FFEE), "Original guardian should remain after cancellation");
     }
 
     // ─────────────────────────────────────────────────────────────────────

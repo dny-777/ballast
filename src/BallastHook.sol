@@ -6,9 +6,9 @@ import {IPoolManager} from "v4-core/interfaces/IPoolManager.sol";
 import {Hooks} from "v4-core/libraries/Hooks.sol";
 import {PoolKey} from "v4-core/types/PoolKey.sol";
 import {PoolId} from "v4-core/types/PoolId.sol";
-import {BalanceDelta} from "v4-core/types/BalanceDelta.sol";
+import {BalanceDelta, toBalanceDelta} from "v4-core/types/BalanceDelta.sol";
 import {BeforeSwapDelta, BeforeSwapDeltaLibrary} from "v4-core/types/BeforeSwapDelta.sol";
-import {SwapParams} from "v4-core/types/PoolOperation.sol";
+import {SwapParams, ModifyLiquidityParams} from "v4-core/types/PoolOperation.sol";
 import {LPFeeLibrary} from "v4-core/libraries/LPFeeLibrary.sol";
 import {StateLibrary} from "v4-core/libraries/StateLibrary.sol";
 import {SwapMath} from "v4-core/libraries/SwapMath.sol";
@@ -61,6 +61,19 @@ contract BallastHook is BaseHook {
     using StateLibrary for IPoolManager;
     using CurrencyLibrary for Currency;
     using FixedPointMathLib for uint256;
+
+    /// @notice Real, significant bug found via live testing, not local
+    /// tests: without this, poolManager.take() reverts whenever it
+    /// tries to deliver NATIVE ETH to this contract as part of a skim
+    /// (the swap-based reserve skim or the JIT liquidity penalty) —
+    /// this contract had no way to accept an incoming ETH transfer at
+    /// all. Every local test exercising these skim paths used two
+    /// ERC20 tokens, never native ETH, so this was never caught until
+    /// a real, live JIT demonstration on a real currency0=ETH pool hit
+    /// it directly. Deliberately empty: this contract never expects or
+    /// uses unsolicited ETH deposits outside of these specific,
+    /// protocol-driven internal transfers.
+    receive() external payable {}
 
     // ─────────────────────────────────────────────────────────────────────
     // Errors
@@ -115,16 +128,39 @@ contract BallastHook is BaseHook {
     /// @notice Emitted when a pool's guardian address is set or changed.
     event GuardianSet(PoolId indexed poolId, address indexed guardian);
 
+    /// @notice Emitted when a change to an EXISTING guardian is queued
+    /// behind the timelock, rather than applied instantly.
+    event GuardianChangeQueued(PoolId indexed poolId, address indexed newGuardian, uint256 effectiveAt);
+
+    /// @notice Emitted when a queued guardian change actually takes effect.
+    event GuardianChangeApplied(PoolId indexed poolId, address indexed newGuardian);
+
+    /// @notice Emitted when a pending guardian change is canceled.
+    event GuardianChangeCanceled(PoolId indexed poolId);
+
     /// @notice Emitted the instant a pool is paused by its guardian.
     /// Watching this event is itself a useful transparency signal —
     /// anyone can independently confirm a pause happened and when.
     event GuardianPaused(PoolId indexed poolId, address indexed guardian, uint256 timestamp);
+
+    /// @notice Emitted when the pool configurer directly pauses the
+    /// pool — a general circuit breaker independent of the guardian
+    /// mechanism, for any reason the automated guardians don't cover
+    /// (e.g. a discovered bug unrelated to oracle safety, a credible
+    /// community report, or any other operational emergency).
+    event EmergencyPaused(PoolId indexed poolId, address indexed configurer, uint256 timestamp);
 
     /// @notice Emitted when a paused pool is resumed. Deliberately only
     /// ever emitted by `resume()`, which only the pool CONFIGURER (never
     /// the guardian) can call — pausing is autonomous and fast; resuming
     /// requires a human decision.
     event Resumed(PoolId indexed poolId, address indexed by, uint256 timestamp);
+
+    /// @notice Emitted whenever the JIT-liquidity penalty is applied —
+    /// a same-block add-then-remove was detected and a share of that
+    /// position's accrued fees was redirected to the reserve instead of
+    /// the withdrawing party.
+    event JitPenaltyApplied(PoolId indexed poolId, address indexed liquidityProvider, uint256 amount0, uint256 amount1);
 
     // ─────────────────────────────────────────────────────────────────────
     // Constants
@@ -206,9 +242,51 @@ contract BallastHook is BaseHook {
     /// than they're worth distributing.
     uint256 public constant MIN_DONATE_THRESHOLD = 1e15; // 0.001 of an 18-decimal token, scaled per-token in practice — see README calibration notes
 
+    /// @notice The share of a position's ACCRUED FEES (never its
+    /// deposited principal) redirected to genuine, patient LPs when
+    /// liquidity is added and removed within the SAME block — the
+    /// classic, textbook JIT (Just-In-Time) liquidity signature: a bot
+    /// adds a large, precisely-ranged position immediately before a
+    /// known large swap, captures a disproportionate share of that
+    /// swap's fee, then withdraws immediately after, all in one block,
+    /// taking on essentially zero price risk. This is a real, distinct
+    /// MEV vector our swap-level Signal 1/Signal 2 defenses do not
+    /// touch at all, since they only observe swaps, never liquidity
+    /// lifecycle events. Set high (80%) deliberately: legitimate LPs
+    /// essentially never have an economic reason to add and fully
+    /// remove the exact same position within one block, so the
+    /// false-positive cost of an aggressive penalty here is very low,
+    /// while a JIT bot's entire strategy depends on capturing close to
+    /// 100% of that fee with near-zero risk — even a modest residual
+    /// share surviving this penalty is likely smaller than the bot's
+    /// own gas cost, making the strategy unprofitable in practice.
+    uint256 public constant JIT_MAX_PENALTY_BPS = 8000; // 80%, at block 0 (same-block removal)
+
+    /// @notice How many blocks the penalty decays over, reaching 0% at
+    /// exactly this many blocks held. A real, honest improvement over
+    /// an earlier, flat "same-block only" version of this defense: a
+    /// hard same-block-only check has a real, exploitable weakness — a
+    /// JIT bot patient enough to wait just ONE extra block pays no
+    /// penalty at all, right at the edge of detection. A smooth decay
+    /// removes that hard cliff entirely: there's no single block where
+    /// waiting one more suddenly makes the position penalty-free, and
+    /// the bot's core problem is unchanged — the longer it holds, the
+    /// more real price risk it's actually exposed to, which is the
+    /// legitimate economic reason genuine LPs are compensated with
+    /// fees at all.
+    uint256 public constant JIT_DECAY_BLOCKS = 10;
+
     // ─────────────────────────────────────────────────────────────────────
     // Storage
     // ─────────────────────────────────────────────────────────────────────
+
+    /// @notice Tracks the block a given liquidity position was last
+    /// added to (or topped up), keyed by a hash of
+    /// (poolId, owner, tickLower, tickUpper, salt) — the same
+    /// components v4 itself uses to identify a unique position. Used
+    /// exclusively to detect the same-block add-then-remove JIT
+    /// signature at removal time.
+    mapping(bytes32 positionKey => uint256 addedAtBlock) public liquidityAddedAtBlock;
 
     /// @notice The Chainlink price feed used as the external reference
     /// price for a given pool. Configured per-pool (not globally) so this
@@ -259,6 +337,19 @@ contract BallastHook is BaseHook {
     /// guardian that could do more than pause would just be a second
     /// admin key, not a safety mechanism.
     mapping(PoolId poolId => address guardianAddr) public guardian;
+
+    /// @notice A queued guardian change, not yet effective. Real fix
+    /// found on final review: an earlier version let setGuardian()
+    /// change instantly, with no timelock at all — meaning a
+    /// compromised configurer could silently swap out a real,
+    /// legitimate guardian for a useless one, disabling BOTH
+    /// OracleGuardian and ZKPriceGuardian entirely, before even
+    /// attempting a malicious oracle change. Now timelocked exactly
+    /// like an oracle change: only the FIRST-ever guardian assignment
+    /// (from no guardian at all) applies immediately, since there's
+    /// nothing real to bypass yet.
+    mapping(PoolId poolId => address pendingGuardianAddr) public pendingGuardian;
+    mapping(PoolId poolId => uint256 effectiveAt) public pendingGuardianEffectiveAt;
 
     /// @notice Whether a pool is currently paused. While paused,
     /// `beforeSwap` skips BOTH signals entirely and falls back to
@@ -345,10 +436,10 @@ contract BallastHook is BaseHook {
         return Hooks.Permissions({
             beforeInitialize: true,
             afterInitialize: false,
-            beforeAddLiquidity: false,
+            beforeAddLiquidity: true,
             afterAddLiquidity: false,
             beforeRemoveLiquidity: false,
-            afterRemoveLiquidity: false,
+            afterRemoveLiquidity: true,
             beforeSwap: true,
             afterSwap: true,
             beforeDonate: false,
@@ -356,7 +447,7 @@ contract BallastHook is BaseHook {
             beforeSwapReturnDelta: false,
             afterSwapReturnDelta: true,
             afterAddLiquidityReturnDelta: false,
-            afterRemoveLiquidityReturnDelta: false
+            afterRemoveLiquidityReturnDelta: true
         });
     }
 
@@ -372,6 +463,139 @@ contract BallastHook is BaseHook {
         if (!key.fee.isDynamicFee()) revert MustUseDynamicFee();
         poolConfigurer[key.toId()] = sender;
         return this.beforeInitialize.selector;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // JIT (Just-In-Time) liquidity defense — a fourth, independent
+    // pillar. Signal 1 and Signal 2 both operate purely on swaps; they
+    // have no visibility into liquidity being added or removed at all.
+    // A JIT bot exploits exactly that blind spot: add a large, precisely
+    // -ranged position right before a known large swap, capture a
+    // disproportionate share of that swap's fee, then withdraw
+    // immediately after — all in one block, with essentially zero price
+    // risk. This defense closes that gap using the same
+    // reserve-and-donate mechanism already proven for toxic swaps.
+    // ─────────────────────────────────────────────────────────────────────
+
+    function _beforeAddLiquidity(address sender, PoolKey calldata key, ModifyLiquidityParams calldata params, bytes calldata)
+        internal
+        override
+        returns (bytes4)
+    {
+        bytes32 positionKey = _positionKey(key.toId(), sender, params);
+        liquidityAddedAtBlock[positionKey] = block.number;
+        return this.beforeAddLiquidity.selector;
+    }
+
+    function _afterRemoveLiquidity(
+        address sender,
+        PoolKey calldata key,
+        ModifyLiquidityParams calldata params,
+        BalanceDelta,
+        BalanceDelta feesAccrued,
+        bytes calldata
+    ) internal override returns (bytes4, BalanceDelta) {
+        PoolId poolId = key.toId();
+        bytes32 positionKey = _positionKey(poolId, sender, params);
+
+        (uint256 penalty0, uint256 penalty1) = _computeJitPenalty(positionKey, feesAccrued);
+
+        if (penalty0 == 0 && penalty1 == 0) {
+            return (this.afterRemoveLiquidity.selector, toBalanceDelta(0, 0));
+        }
+
+        // Physically claim the penalty tokens, exactly matching the
+        // established pattern already proven for the swap-based reserve
+        // skim: returning a positive BalanceDelta below adjusts v4's
+        // ACCOUNTING of what the LP is owed, but does not itself move
+        // any tokens — take() is what actually pulls them into this
+        // contract's real balance, which _releaseReserve() below
+        // requires to genuinely have on hand before it can donate them.
+        if (penalty0 > 0) poolManager.take(key.currency0, address(this), penalty0);
+        if (penalty1 > 0) poolManager.take(key.currency1, address(this), penalty1);
+
+        pendingReserve0[poolId] += penalty0;
+        pendingReserve1[poolId] += penalty1;
+        emit JitPenaltyApplied(poolId, sender, penalty0, penalty1);
+
+        // Real edge case, found via an actual reverted transaction, not
+        // assumed: donate() requires the pool to have REMAINING active
+        // liquidity to receive it. If this exact removal empties the
+        // pool entirely (a real possibility if the JIT position happens
+        // to be the pool's only liquidity at that moment), attempting
+        // to auto-release here would revert the whole transaction with
+        // NoLiquidityToReceiveFees() — bricking a legitimate removal
+        // over a fee-distribution technicality. The captured penalty
+        // isn't lost in this case: it simply stays in pendingReserve
+        // and gets released the next time ANY swap happens against
+        // this pool (via afterSwap's own identical threshold check),
+        // once real liquidity exists again to receive it.
+        if (
+            poolManager.getLiquidity(poolId) > 0
+                && (pendingReserve0[poolId] >= MIN_DONATE_THRESHOLD || pendingReserve1[poolId] >= MIN_DONATE_THRESHOLD)
+        ) {
+            _releaseReserve(key, poolId);
+        }
+
+        // Positive hook-delta = the hook takes this amount, reducing
+        // what the withdrawing party actually receives — the same real,
+        // empirically-verified sign convention already established for
+        // afterSwap's reserve skim (see that function's own notes on
+        // how this was verified, not assumed, against a real trace).
+        // Safe: penalty0/penalty1 are each at most JIT_MAX_PENALTY_BPS
+        // (80%) of the position's fees, which were themselves already
+        // valid, non-negative int128 values — so each penalty is
+        // bounded above by an already-valid int128 value and cannot
+        // overflow when cast back.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        return (
+            this.afterRemoveLiquidity.selector,
+            toBalanceDelta(int128(uint128(penalty0)), int128(uint128(penalty1)))
+        );
+    }
+
+    /// @notice Computes the real, decay-based JIT penalty for a given
+    /// position's accrued fees. Extracted into its own function
+    /// specifically to keep _afterRemoveLiquidity's own local variable
+    /// count low enough to compile — a real, mundane Solidity stack-
+    /// depth limit encountered and fixed during development, not a
+    /// design choice made for its own sake.
+    function _computeJitPenalty(bytes32 positionKey, BalanceDelta feesAccrued)
+        internal
+        view
+        returns (uint256 penalty0, uint256 penalty1)
+    {
+        uint256 blocksHeld = block.number - liquidityAddedAtBlock[positionKey];
+        if (blocksHeld >= JIT_DECAY_BLOCKS) return (0, 0);
+
+        // Linear decay: 100% of JIT_MAX_PENALTY_BPS at blocksHeld=0,
+        // smoothly down to 0% at blocksHeld=JIT_DECAY_BLOCKS — no hard
+        // cliff a bot could dodge by waiting exactly one more block.
+        uint256 penaltyBps =
+            FixedPointMathLib.mulDivDown(JIT_MAX_PENALTY_BPS, JIT_DECAY_BLOCKS - blocksHeld, JIT_DECAY_BLOCKS);
+
+        int128 fees0 = feesAccrued.amount0();
+        int128 fees1 = feesAccrued.amount1();
+
+        // Only ever skim from POSITIVE fee amounts owed to the LP —
+        // never touch a negative (owed-to-pool) component, and never
+        // touch principal at all, since feesAccrued is specifically the
+        // fee portion, separate from the principal returned in `delta`.
+        // Safe: fees0/fees1 were just confirmed > 0 in this branch, and
+        // BalanceDelta's components are int128, so casting to uint128
+        // cannot lose or misrepresent the value.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        penalty0 = fees0 > 0 ? FixedPointMathLib.mulDivDown(uint128(fees0), penaltyBps, BPS_DENOMINATOR) : 0;
+        // forge-lint: disable-next-line(unsafe-typecast)
+        penalty1 = fees1 > 0 ? FixedPointMathLib.mulDivDown(uint128(fees1), penaltyBps, BPS_DENOMINATOR) : 0;
+    }
+
+    function _positionKey(PoolId poolId, address owner, ModifyLiquidityParams calldata params)
+        internal
+        pure
+        returns (bytes32)
+    {
+        return keccak256(abi.encode(poolId, owner, params.tickLower, params.tickUpper, params.salt));
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -528,8 +752,62 @@ contract BallastHook is BaseHook {
     function setGuardian(PoolKey calldata key, address newGuardian) external {
         PoolId poolId = key.toId();
         require(msg.sender == poolConfigurer[poolId], "Ballast: not pool configurer");
+
+        if (guardian[poolId] == address(0)) {
+            // First-ever guardian assignment — applies immediately.
+            // There's no existing, real protection to silently bypass
+            // yet, unlike changing an already-active guardian.
+            guardian[poolId] = newGuardian;
+            emit GuardianSet(poolId, newGuardian);
+        } else {
+            // Changing an EXISTING guardian — queued behind the same
+            // timelock as an oracle change, for the same reason: this
+            // is exactly the action a compromised configurer would use
+            // to silently disable real protection before an attack.
+            pendingGuardian[poolId] = newGuardian;
+            uint256 effectiveAt = block.timestamp + ORACLE_CHANGE_TIMELOCK;
+            pendingGuardianEffectiveAt[poolId] = effectiveAt;
+            emit GuardianChangeQueued(poolId, newGuardian, effectiveAt);
+        }
+    }
+
+    /// @notice Applies a previously-queued guardian change once its
+    /// timelock has elapsed. Permissionless, matching
+    /// applyPendingOracleChange()'s reasoning exactly. Also blocked
+    /// while paused, for the identical reason: a pause specifically
+    /// exists to give time to investigate a suspicious pending change
+    /// before it takes effect.
+    function applyPendingGuardianChange(PoolKey calldata key) external {
+        PoolId poolId = key.toId();
+        uint256 effectiveAt = pendingGuardianEffectiveAt[poolId];
+
+        require(effectiveAt != 0, "Ballast: no pending guardian change");
+        require(!paused[poolId], "Ballast: cannot apply guardian change while pool is paused");
+        // forge-lint: disable-next-line(block-timestamp)
+        require(block.timestamp >= effectiveAt, "Ballast: timelock not yet elapsed");
+
+        address newGuardian = pendingGuardian[poolId];
         guardian[poolId] = newGuardian;
-        emit GuardianSet(poolId, newGuardian);
+
+        pendingGuardian[poolId] = address(0);
+        pendingGuardianEffectiveAt[poolId] = 0;
+
+        emit GuardianChangeApplied(poolId, newGuardian);
+    }
+
+    /// @notice Cancels a pending guardian change before it takes
+    /// effect. Always allowed regardless of pause state, matching
+    /// cancelPendingOracleChange()'s reasoning: canceling is always
+    /// safe to allow.
+    function cancelPendingGuardianChange(PoolKey calldata key) external {
+        PoolId poolId = key.toId();
+        require(msg.sender == poolConfigurer[poolId], "Ballast: not pool configurer");
+        require(pendingGuardianEffectiveAt[poolId] != 0, "Ballast: no pending guardian change");
+
+        pendingGuardian[poolId] = address(0);
+        pendingGuardianEffectiveAt[poolId] = 0;
+
+        emit GuardianChangeCanceled(poolId);
     }
 
     /// @notice Pauses a pool. Callable ONLY by that pool's configured
@@ -542,6 +820,23 @@ contract BallastHook is BaseHook {
         require(msg.sender == guardian[poolId], "Ballast: not the guardian");
         paused[poolId] = true;
         emit GuardianPaused(poolId, msg.sender, block.timestamp);
+    }
+
+    /// @notice A general circuit breaker for the pool configurer,
+    /// independent of the guardian mechanism entirely. The guardian
+    /// path (above) only ever fires for the specific conditions
+    /// OracleGuardian and ZKPriceGuardian watch for; this exists for
+    /// everything else — any operational emergency a configurer
+    /// discovers directly. Deliberately symmetric with resume() (same
+    /// access control, same pool-scoped effect), so the same party who
+    /// can lift a pause can also trigger one, for reasons the automated
+    /// guardians were never designed to catch.
+    function emergencyPause(PoolKey calldata key) external {
+        PoolId poolId = key.toId();
+        require(msg.sender == poolConfigurer[poolId], "Ballast: not pool configurer");
+        require(!paused[poolId], "Ballast: pool is already paused");
+        paused[poolId] = true;
+        emit EmergencyPaused(poolId, msg.sender, block.timestamp);
     }
 
     /// @notice Resumes a paused pool. Callable ONLY by the pool

@@ -43,10 +43,12 @@ contract BallastInvariantTest is StdInvariant, Test, Deployers {
         uint160 flags = uint160(
             Hooks.BEFORE_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG
                 | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG
+                | Hooks.BEFORE_ADD_LIQUIDITY_FLAG | Hooks.AFTER_REMOVE_LIQUIDITY_FLAG
+                | Hooks.AFTER_REMOVE_LIQUIDITY_RETURNS_DELTA_FLAG
         );
         address hookAddress = address(flags);
         deployCodeTo("BallastHook.sol:BallastHook", abi.encode(manager), hookAddress);
-        hook = BallastHook(hookAddress);
+        hook = BallastHook(payable(hookAddress));
 
         (key,) = initPool(currency0, currency1, hook, LPFeeLibrary.DYNAMIC_FEE_FLAG, SQRT_PRICE_1_1);
 

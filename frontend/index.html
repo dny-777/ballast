@@ -1,0 +1,1041 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ballast — when they disagree, that's the alarm</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..900;1,9..144,300..900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0B0F0D;
+    --panel: #131A16;
+    --panel-2: #1A2320;
+    --text: #F2F0E8;
+    --text-soft: #8FA69B;
+    --alarm: #FF7A45;
+    --alarm-deep: #E85D2B;
+    --safe: #00E0A0;
+    --safe-deep: #00A377;
+    --grid: #24312B;
+    --grid-soft: #1C2621;
+    --gold: #F2C94C;
+    --serif: 'Fraunces', serif;
+    --mono: 'JetBrains Mono', monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body { background: var(--bg); color: var(--text); font-family: var(--serif); font-size: 18px; line-height: 1.55; -webkit-font-smoothing: antialiased; overflow-x: hidden; }
+  ::selection { background: var(--alarm); color: var(--bg); }
+  a { color: inherit; text-decoration: none; }
+  .mono { font-family: var(--mono); }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 0 32px; }
+
+  /* subtle grain texture */
+  body::before {
+    content: ''; position: fixed; inset: 0; pointer-events: none; z-index: 1000; opacity: 0.035;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='100' height='100'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+
+  .ticker-wrap { background: var(--panel); overflow: hidden; white-space: nowrap; padding: 9px 0; border-bottom: 1px solid var(--grid); }
+  .ticker-track { display: inline-block; animation: ticker 40s linear infinite; font-family: var(--mono); font-size: 12.5px; }
+  .ticker-track span { margin-right: 46px; color: var(--text-soft); }
+  .ticker-track span b { color: var(--safe); font-weight: 600; }
+  @keyframes ticker { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+
+  header.site { position: sticky; top: 0; z-index: 50; background: rgba(11,15,13,0.92); backdrop-filter: blur(6px); border-bottom: 1px solid var(--grid); }
+  .site-header-inner { display: flex; align-items: center; justify-content: space-between; padding: 15px 32px; max-width: 1180px; margin: 0 auto; }
+  .wordmark { display: flex; align-items: center; gap: 12px; cursor: pointer; }
+  .wordmark-icon { width: 34px; height: 34px; background: var(--panel-2); border: 1px solid var(--grid); display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+  .wordmark-text { display: flex; flex-direction: column; line-height: 1.1; }
+  .wordmark-mark { font-family: var(--serif); font-weight: 900; font-size: 21px; letter-spacing: -0.02em; color: var(--text); }
+  .wordmark-sub { font-family: var(--mono); font-size: 9px; letter-spacing: 0.12em; color: var(--text-soft); }
+  .nav-links { display: flex; align-items: center; gap: 26px; font-family: var(--mono); font-size: 13px; color: var(--text-soft); }
+  .nav-links a { cursor: pointer; padding-bottom: 2px; border-bottom: 1px solid transparent; }
+  .nav-links a.active, .nav-links a:hover { color: var(--text); border-bottom-color: var(--safe); }
+  .btn-launch { background: var(--safe); color: #06120D; padding: 10px 20px; font-family: var(--mono); font-size: 13px; font-weight: 700; border: none; cursor: pointer; transition: transform 0.15s ease, background 0.15s ease; }
+  .btn-launch:hover { background: var(--text); transform: translateY(-1px); }
+
+  .view { display: none; }
+  .view.active { display: block; }
+
+  /* reveal-on-scroll */
+  .reveal { opacity: 0; transform: translateY(24px); transition: opacity 0.7s ease, transform 0.7s ease; }
+  .reveal.in { opacity: 1; transform: translateY(0); }
+
+  /* ---- Hero ---- */
+  .hero { padding: 64px 0 0; position: relative; }
+  .hero-badge { display: inline-flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 12px; color: var(--text-soft); border: 1px solid var(--grid); padding: 6px 12px; margin-bottom: 24px; }
+  .hero-badge .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--safe); box-shadow: 0 0 8px var(--safe); }
+  h1.hero-title { font-family: var(--serif); font-weight: 900; font-size: clamp(40px, 5.6vw, 68px); line-height: 1.02; letter-spacing: -0.02em; max-width: 640px; margin-bottom: 22px; }
+  h1.hero-title .accent { position: relative; display: inline-block; }
+  h1.hero-title .accent svg { position: absolute; left: 0; bottom: -6px; width: 100%; height: 14px; }
+  .hero-sub { font-size: 18.5px; color: var(--text-soft); max-width: 500px; margin-bottom: 30px; }
+  .hero-ctas { display: flex; gap: 14px; margin-bottom: 8px; }
+  .btn-primary { background: var(--safe); color: #06120D; padding: 14px 26px; font-family: var(--mono); font-size: 14px; font-weight: 700; border: none; cursor: pointer; transition: transform 0.15s ease; }
+  .btn-primary:hover { transform: translateY(-2px); }
+  .btn-secondary { background: transparent; color: var(--text); padding: 14px 26px; font-family: var(--mono); font-size: 14px; font-weight: 600; border: 1px solid var(--grid); cursor: pointer; transition: border-color 0.15s ease; }
+  .btn-secondary:hover { border-color: var(--text); }
+
+  .hero-grid { display: grid; grid-template-columns: 1fr 460px; gap: 20px; align-items: center; padding: 30px 0 40px; }
+  .gauge-wrap { position: relative; padding: 10px 30px 30px; }
+  .gauge-readout { text-align: center; font-family: var(--mono); margin-top: 4px; }
+  .gauge-readout .gr-label { font-size: 12px; color: var(--text-soft); }
+  .gauge-readout .gr-val { font-size: 26px; font-weight: 700; transition: color 0.3s ease; }
+
+  .float-card { position: absolute; background: var(--panel); border: 1px solid var(--grid); padding: 16px 18px; font-family: var(--mono); width: 230px; backdrop-filter: blur(4px); z-index: 3; }
+  .float-card.card-1 { top: -14px; left: -50px; }
+  .float-card.card-2 { bottom: -34px; right: -50px; }
+  .float-card .fc-title { font-size: 10.5px; color: var(--text-soft); display: flex; justify-content: space-between; margin-bottom: 10px; }
+  .float-card .fc-live { color: var(--safe); font-weight: 700; }
+  .float-card .fc-row { display: flex; justify-content: space-between; align-items: baseline; padding: 5px 0; font-size: 12.5px; }
+  .float-card .fc-val { font-weight: 700; }
+  .float-card .fc-val.alarm { color: var(--alarm); }
+  .float-card .fc-val.ok { color: var(--safe); }
+
+  /* ---- trace instrument ---- */
+  .trace-panel { border: 1px solid var(--grid); background: var(--panel); position: relative; }
+  .trace-panel-header { display: flex; justify-content: space-between; align-items: center; padding: 13px 20px; border-bottom: 1px solid var(--grid); font-family: var(--mono); font-size: 12px; color: var(--text-soft); }
+  .trace-legend { display: flex; gap: 20px; }
+  .trace-legend-item { display: flex; align-items: center; gap: 7px; }
+  .legend-swatch { width: 16px; height: 2px; }
+  .legend-swatch.s1 { background: var(--text); }
+  .legend-swatch.s2 { background: var(--safe); }
+  #annotation { position: absolute; font-family: var(--mono); font-size: 12px; line-height: 1.5; background: var(--panel-2); border: 1px solid var(--alarm); padding: 10px 13px; max-width: 240px; opacity: 0; transition: opacity 0.5s ease; pointer-events: none; }
+  #annotation .tag { color: var(--alarm); font-weight: 700; display: block; margin-bottom: 4px; }
+  .trace-panel-footer { display: flex; justify-content: space-between; padding: 13px 20px; border-top: 1px solid var(--grid); font-family: var(--mono); font-size: 11.5px; color: var(--text-soft); }
+  .trace-panel-footer strong { color: var(--text); font-weight: 600; }
+
+  /* ---- Sections ---- */
+  section { padding: 80px 0; border-bottom: 1px solid var(--grid); }
+  section:last-of-type { border-bottom: none; }
+  .section-head { max-width: 660px; margin-bottom: 50px; }
+  .section-kicker { font-family: var(--mono); font-size: 13px; color: var(--safe); margin-bottom: 14px; }
+  h2 { font-family: var(--serif); font-weight: 800; font-size: clamp(30px, 4vw, 44px); letter-spacing: -0.01em; margin-bottom: 16px; }
+  .section-body-text { color: var(--text-soft); font-size: 17px; max-width: 580px; }
+
+  .formula-block { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--grid); border: 1px solid var(--grid); margin-top: 40px; }
+  .formula-cell { background: var(--panel); padding: 26px 28px; }
+  .formula-cell h3 { font-family: var(--serif); font-weight: 700; font-size: 19px; margin-bottom: 10px; }
+  .formula-cell p { color: var(--text-soft); font-size: 15px; margin-bottom: 14px; }
+  .formula-code { font-family: var(--mono); font-size: 13px; background: var(--panel-2); padding: 12px 14px; border-left: 3px solid var(--safe); white-space: pre-wrap; line-height: 1.6; color: var(--text); }
+  .formula-cell.full { grid-column: 1 / -1; border-top: 1px solid var(--grid); }
+  .formula-cell.full .formula-code { border-left-color: var(--alarm); }
+
+  .chart-panel { border: 1px solid var(--grid); background: var(--panel); padding: 24px; margin-top: 40px; }
+  .chart-panel-title { font-family: var(--mono); font-size: 12px; color: var(--text-soft); margin-bottom: 16px; display: flex; justify-content: space-between; }
+
+  /* ---- gradient mechanism cards, connected ---- */
+  .mech-grid { position: relative; display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 48px; }
+  .mech-card { border-radius: 4px; padding: 28px 26px; position: relative; overflow: hidden; min-height: 280px; display: flex; flex-direction: column; }
+  .mech-card.m1 { background: linear-gradient(135deg, #00E0A0, #007A57); }
+  .mech-card.m2 { background: linear-gradient(135deg, #FF7A45, #A02B12); }
+  .mech-card.m3 { background: linear-gradient(135deg, #2DD4BF, #164A66); }
+  .mech-card.m4 { background: linear-gradient(135deg, #F2C94C, #C1633B); }
+  .mech-card h3 { font-family: var(--serif); font-weight: 800; font-size: 24px; color: #06120D; margin-bottom: 10px; }
+  .mech-card p { color: rgba(6,18,13,0.75); font-size: 14.5px; max-width: 320px; margin-bottom: 18px; }
+  .mech-mockup { background: rgba(6,18,13,0.88); border-radius: 4px; padding: 14px 16px; font-family: var(--mono); font-size: 12px; color: var(--text); margin-top: auto; }
+  .mech-mockup .mm-row { display: flex; justify-content: space-between; padding: 4px 0; }
+  .mech-mockup .mm-row .mm-safe { color: var(--safe); }
+  .mech-mockup .mm-row .mm-alarm { color: var(--alarm); }
+  .connector-svg { position: absolute; inset: 0; pointer-events: none; z-index: -1; opacity: 0.4; }
+
+  /* ---- numbered walkthrough (kept for docs-style depth, no numbering) ---- */
+  .walkthrough { display: grid; grid-template-columns: 1fr 1fr; gap: 56px; align-items: start; margin-top: 48px; padding-top: 48px; border-top: 1px solid var(--grid); }
+  .walkthrough:first-of-type { margin-top: 0; padding-top: 0; border-top: none; }
+  .wt-num { font-family: var(--mono); font-size: 12px; color: var(--safe); margin-bottom: 10px; }
+  .wt-title { font-family: var(--serif); font-weight: 700; font-size: 25px; margin-bottom: 12px; }
+  .wt-steps { margin-top: 20px; }
+  .wt-step { display: flex; gap: 14px; padding: 12px 0; border-top: 1px solid var(--grid-soft); }
+  .wt-step:first-child { border-top: none; }
+  .wt-step-num { font-family: var(--mono); font-size: 12px; color: var(--text-soft); flex-shrink: 0; width: 20px; }
+  .wt-step-body b { display: block; font-size: 14.5px; margin-bottom: 3px; }
+  .wt-step-body span { font-size: 13.5px; color: var(--text-soft); }
+  .wt-proof { font-family: var(--mono); font-size: 12px; color: var(--safe); margin-top: 18px; padding-top: 14px; border-top: 1px dashed var(--grid); }
+  .wt-visual { border: 1px solid var(--grid); background: var(--panel); padding: 20px; }
+
+  /* ---- stack strip ---- */
+  .stack-strip { display: grid; grid-template-columns: repeat(6, 1fr); gap: 1px; background: var(--grid); border: 1px solid var(--grid); margin-top: 40px; }
+  .stack-item { background: var(--panel); padding: 20px 12px; text-align: center; transition: background 0.2s ease; }
+  .stack-item:hover { background: var(--panel-2); }
+  .stack-item .role { font-family: var(--mono); font-size: 10.5px; color: var(--safe); margin-bottom: 6px; }
+  .stack-item .name { font-family: var(--serif); font-weight: 700; font-size: 14px; }
+
+  /* ---- deployed grid ---- */
+  .deployed-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--grid); border: 1px solid var(--grid); margin-top: 40px; }
+  .deployed-card { background: var(--panel); padding: 20px 22px; transition: background 0.2s ease; }
+  .deployed-card:hover { background: var(--panel-2); }
+  .deployed-card .dc-name { font-family: var(--serif); font-weight: 700; font-size: 15.5px; margin-bottom: 4px; }
+  .deployed-card .dc-chain { font-family: var(--mono); font-size: 10.5px; color: var(--text-soft); margin-bottom: 10px; }
+  .deployed-card .dc-addr { font-family: var(--mono); font-size: 12px; color: var(--safe); word-break: break-all; }
+
+  /* ---- stat cards, bold gradient ---- */
+  .stat-cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-top: 40px; }
+  .stat-card { border-radius: 4px; padding: 26px 22px; }
+  .stat-card.sc1 { background: linear-gradient(135deg, #00E0A0, #007A57); }
+  .stat-card.sc2 { background: linear-gradient(135deg, #2DD4BF, #164A66); }
+  .stat-card.sc3 { background: linear-gradient(135deg, #F2C94C, #C1633B); }
+  .stat-card.sc4 { background: linear-gradient(135deg, #FF7A45, #A02B12); }
+  .stat-card .sc-val { font-family: var(--serif); font-weight: 900; font-size: 34px; color: #06120D; }
+  .stat-card .sc-lbl { font-family: var(--mono); font-size: 12px; color: rgba(6,18,13,0.75); margin-top: 6px; }
+
+  .disclosure { border: 1px solid var(--alarm); background: var(--panel); padding: 24px 26px; margin-top: 40px; }
+  .disclosure b { color: var(--alarm); font-family: var(--mono); font-size: 12px; display: block; margin-bottom: 10px; }
+  .disclosure p { color: var(--text-soft); font-size: 15px; }
+
+  /* ---- interactive ledger ---- */
+  .ledger { border: 1px solid var(--grid); border-collapse: collapse; width: 100%; font-family: var(--mono); font-size: 13px; }
+  .ledger th { text-align: left; padding: 11px 16px; background: var(--panel-2); color: var(--text-soft); font-weight: 500; font-size: 11px; }
+  .ledger td { padding: 12px 16px; border-top: 1px solid var(--grid); vertical-align: top; }
+  .ledger .ok { color: var(--safe); font-weight: 600; }
+  .ledger tr.led-detail td { background: var(--panel); font-size: 12px; color: var(--text-soft); padding: 12px 16px; border-top: none; }
+  .ledger tr.led-detail a { color: var(--safe); text-decoration: underline; }
+  .ledger .verify-hint { color: var(--text-soft); font-size: 11px; }
+
+  .final-cta { text-align: left; padding: 76px 0; }
+  .final-cta h2 { font-size: clamp(32px, 5vw, 54px); max-width: 700px; }
+
+  footer { padding: 48px 0; font-family: var(--mono); font-size: 12.5px; background: var(--panel); }
+  .footer-grid { display: grid; grid-template-columns: 1.4fr 1fr 1fr 1fr; gap: 30px; padding-bottom: 30px; }
+  .footer-grid h4 { color: var(--text); font-weight: 500; margin-bottom: 14px; font-size: 11px; letter-spacing: 0.05em; }
+  .footer-grid a { display: block; padding: 5px 0; color: var(--text-soft); }
+  .footer-grid a:hover { color: var(--safe); }
+  .footer-bottom { border-top: 1px solid var(--grid); padding-top: 20px; display: flex; justify-content: space-between; color: var(--text-soft); }
+
+  /* ================= APP VIEW ================= */
+  .app-shell { display: grid; grid-template-columns: 340px 1fr; gap: 1px; background: var(--grid); border: 1px solid var(--grid); margin-top: 32px; min-height: 560px; }
+  .app-panel { background: var(--panel); padding: 26px; }
+  .app-panel-title { font-family: var(--mono); font-size: 12px; color: var(--text-soft); margin-bottom: 20px; display: flex; justify-content: space-between; }
+  .swap-row { display: flex; justify-content: space-between; align-items: center; padding: 14px 0; }
+  .swap-row input { font-family: var(--mono); font-size: 22px; border: none; background: transparent; width: 60%; color: var(--text); }
+  .swap-row input:focus { outline: none; }
+  .swap-token { font-family: var(--mono); font-size: 14px; background: var(--panel-2); padding: 6px 12px; border: 1px solid var(--grid); }
+  .swap-divider { text-align: center; font-family: var(--mono); color: var(--text-soft); font-size: 12px; padding: 4px 0; }
+  .swap-fee-readout { font-family: var(--mono); font-size: 12.5px; color: var(--text-soft); padding: 10px 0; border-top: 1px dashed var(--grid); margin-top: 6px; }
+  .swap-fee-readout .fee-val { color: var(--safe); font-weight: 700; }
+  .dash-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--grid); height: 100%; }
+  .dash-cell { background: var(--panel); padding: 22px 24px; }
+  .dash-cell h4 { font-family: var(--mono); font-size: 12px; color: var(--text-soft); margin-bottom: 16px; font-weight: 500; }
+  .gauge-row { display: flex; justify-content: space-between; align-items: baseline; padding: 9px 0; border-bottom: 1px solid var(--grid-soft); font-family: var(--mono); font-size: 13px; }
+  .gauge-row:last-child { border-bottom: none; }
+  .gauge-row .g-val { font-weight: 700; }
+  .gauge-row .g-val.ok { color: var(--safe); }
+  .bar-track { height: 6px; background: var(--panel-2); margin-top: 5px; }
+  .bar-fill { height: 100%; background: var(--safe); }
+  .guardian-light { display: flex; align-items: center; gap: 10px; padding: 11px 0; border-bottom: 1px solid var(--grid-soft); font-family: var(--mono); font-size: 12.5px; }
+  .guardian-light:last-child { border-bottom: none; }
+  .dot-live { width: 8px; height: 8px; border-radius: 50%; background: var(--safe); box-shadow: 0 0 0 3px rgba(0,224,160,0.15); flex-shrink: 0; }
+  .guardian-light .addr { color: var(--text-soft); font-size: 11px; }
+
+  /* ================= DOCS VIEW ================= */
+  .docs-shell { display: grid; grid-template-columns: 240px 1fr; gap: 48px; margin-top: 40px; }
+  .docs-nav { font-family: var(--mono); font-size: 13px; position: sticky; top: 90px; align-self: start; }
+  .docs-nav .docs-nav-num { color: var(--safe); margin-right: 6px; }
+  .docs-nav a { display: block; padding: 7px 0; color: var(--text-soft); }
+  .docs-nav a:hover, .docs-nav a.active { color: var(--text); }
+  .docs-content h3 { font-family: var(--serif); font-weight: 800; font-size: 28px; margin: 56px 0 16px; }
+  .docs-content h3:first-child { margin-top: 0; }
+  .docs-content h4 { font-family: var(--serif); font-weight: 700; font-size: 18px; margin: 26px 0 8px; color: var(--safe); }
+  .docs-content p { color: var(--text-soft); margin-bottom: 14px; max-width: 680px; }
+  .docs-content .formula-code { margin: 14px 0; max-width: 680px; }
+  .docs-addr-table { font-family: var(--mono); font-size: 12.5px; border: 1px solid var(--grid); border-collapse: collapse; width: 100%; max-width: 720px; margin: 16px 0; }
+  .docs-addr-table td { padding: 9px 14px; border-top: 1px solid var(--grid); }
+  .docs-addr-table tr:nth-child(even) td { background: var(--panel); }
+  .docs-ref { font-size: 14.5px; color: var(--text-soft); margin-bottom: 12px; max-width: 680px; }
+  .docs-ref b { color: var(--text); }
+  .docs-callout { border-left: 3px solid var(--safe); background: var(--panel); padding: 16px 20px; margin: 20px 0; max-width: 680px; }
+  .docs-callout.alarm { border-left-color: var(--alarm); }
+  .docs-callout p { margin-bottom: 0; color: var(--text-soft); font-size: 14.5px; }
+  .docs-progress { position: fixed; top: 0; left: 0; height: 2px; background: var(--safe); z-index: 100; transition: width 0.1s ease; }
+
+  @media (max-width: 980px) {
+    .formula-block, .app-shell, .dash-grid, .docs-shell, .hero-grid, .walkthrough, .deployed-grid, .footer-grid, .mech-grid { grid-template-columns: 1fr; }
+    .stack-strip, .stat-cards { grid-template-columns: repeat(2, 1fr); }
+    .float-card { position: static; width: 100%; margin-bottom: 12px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="docs-progress" id="docsProgress" style="width:0%;"></div>
+
+<div class="ticker-wrap">
+  <div class="ticker-track mono">
+    <span><b>114</b> tests passing</span>
+    <span><b>384,000</b> invariant operations, 0 violations</span>
+    <span>a real vulnerability found and fixed: <b>guardian-swap timelock</b></span>
+    <span>a real bug found live: <b>native ETH receive()</b></span>
+    <span>sandwich attacker profit: <b>0.258 ETH → $0</b></span>
+    <span>JIT penalty proven live, <b>2 blocks held</b></span>
+    <span>zkTLS proof verified on-chain: <b>$2422.80</b></span>
+    <span>cross-chain pause in <b>~12 seconds</b></span>
+    <span><b>114</b> tests passing</span>
+    <span><b>384,000</b> invariant operations, 0 violations</span>
+    <span>a real vulnerability found and fixed: <b>guardian-swap timelock</b></span>
+    <span>a real bug found live: <b>native ETH receive()</b></span>
+    <span>sandwich attacker profit: <b>0.258 ETH → $0</b></span>
+    <span>JIT penalty proven live, <b>2 blocks held</b></span>
+    <span>zkTLS proof verified on-chain: <b>$2422.80</b></span>
+    <span>cross-chain pause in <b>~12 seconds</b></span>
+  </div>
+</div>
+
+<header class="site">
+  <div class="site-header-inner">
+    <div class="wordmark" onclick="showView('landing')">
+      <div class="wordmark-icon"><svg width="20" height="14" viewBox="0 0 20 14"><path d="M0 4 L8 4 L11 1 L14 4 L20 4" fill="none" stroke="#F2F0E8" stroke-width="1.6"/><path d="M0 10 L8 10 L11 13 L14 10 L20 10" fill="none" stroke="#00E0A0" stroke-width="1.6"/></svg></div>
+      <div class="wordmark-text">
+        <span class="wordmark-mark">Ballast</span>
+        <span class="wordmark-sub">TOXIC-FLOW PROTECTED LIQUIDITY</span>
+      </div>
+    </div>
+    <div class="nav-links">
+      <a onclick="showView('landing')" id="nav-landing" class="active">How it works</a>
+      <a onclick="showView('docs')" id="nav-docs">Docs</a>
+      <a href="https://github.com/dny-777/ballast" target="_blank">GitHub</a>
+      <button class="btn-launch" onclick="showView('app')">Launch App</button>
+    </div>
+  </div>
+</header>
+
+<!-- ============ LANDING VIEW ============ -->
+<div class="view active" id="view-landing">
+
+  <div class="wrap">
+    <div class="hero">
+      <div class="hero-badge"><span class="dot"></span>Uniswap Hookathon · UHI10 · fair-flow track</div>
+      <div class="hero-grid">
+        <div>
+          <h1 class="hero-title">Two readings.<br>When they <span class="accent">disagree<svg viewBox="0 0 200 14" preserveAspectRatio="none"><path d="M2,8 Q30,2 60,7 T120,6 T198,9" fill="none" stroke="#FF7A45" stroke-width="3" stroke-linecap="round"/></svg></span>, that's the alarm.</h1>
+          <p class="hero-sub">A Uniswap v4 hook that runs four independent instruments on the pool: two that catch toxic swaps, one that taxes drive-by liquidity, and two that make sure the oracle underneath all of it can be trusted.</p>
+          <div class="hero-ctas">
+            <button class="btn-primary" onclick="showView('app')">Launch App</button>
+            <button class="btn-secondary" onclick="showView('docs')">Read the docs</button>
+          </div>
+        </div>
+        <div class="gauge-wrap">
+          <div class="float-card card-1">
+            <div class="fc-title"><span>SIGNAL READOUT</span><span class="fc-live">● live</span></div>
+            <div class="fc-row"><span>Signal 1</span><span class="fc-val" id="fcS1">0.04</span></div>
+            <div class="fc-row"><span>Signal 2</span><span class="fc-val" id="fcS2">0.02</span></div>
+          </div>
+          <svg id="gaugeSvg" viewBox="0 0 400 260" style="width:100%;">
+            <path d="M 40 220 A 160 160 0 0 1 133 84" fill="none" stroke="#00E0A0" stroke-width="22" stroke-linecap="round"/>
+            <path d="M 133 84 A 160 160 0 0 1 267 84" fill="none" stroke="#F2C94C" stroke-width="22" stroke-linecap="round"/>
+            <path d="M 267 84 A 160 160 0 0 1 360 220" fill="none" stroke="#FF7A45" stroke-width="22" stroke-linecap="round"/>
+            <line id="needle" x1="200" y1="220" x2="80" y2="220" stroke="#F2F0E8" stroke-width="4" stroke-linecap="round"/>
+            <circle cx="200" cy="220" r="10" fill="#F2F0E8"/>
+          </svg>
+          <div class="gauge-readout">
+            <div class="gr-label">combined divergence score</div>
+            <div class="gr-val" id="gaugeVal" style="color:var(--safe);">0.06</div>
+          </div>
+          <div class="float-card card-2">
+            <div class="fc-title"><span>JIT PENALTY, LIVE</span><span class="fc-live">● proven</span></div>
+            <div class="fc-row"><span>Held</span><span class="fc-val">2 blocks</span></div>
+            <div class="fc-row"><span>Captured</span><span class="fc-val alarm">2.4e12 wei</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="trace-panel reveal">
+        <div class="trace-panel-header">
+          <div class="trace-legend">
+            <div class="trace-legend-item"><span class="legend-swatch s1"></span> Signal 1 — oracle deviation</div>
+            <div class="trace-legend-item"><span class="legend-swatch s2"></span> Signal 2 — structural impact</div>
+          </div>
+          <div>live trace, real swap sequence</div>
+        </div>
+        <div style="overflow:hidden;">
+          <svg id="traceSvg" viewBox="0 0 1000 220" preserveAspectRatio="none" style="width:100%;display:block;">
+            <g stroke="#1C2621" stroke-width="1">
+              <line x1="0" y1="36" x2="1000" y2="36"/><line x1="0" y1="73" x2="1000" y2="73"/>
+              <line x1="0" y1="110" x2="1000" y2="110"/><line x1="0" y1="147" x2="1000" y2="147"/><line x1="0" y1="184" x2="1000" y2="184"/>
+            </g>
+            <path id="s1path" d="M0,110 L1000,110" fill="none" stroke="#F2F0E8" stroke-width="2.5"/>
+            <path id="s2path" d="M0,110 L1000,110" fill="none" stroke="#00E0A0" stroke-width="2.5"/>
+            <line id="flagLine" x1="640" y1="0" x2="640" y2="220" stroke="#FF7A45" stroke-width="1.5" stroke-dasharray="4 4" opacity="0"/>
+            <circle id="flagDot" cx="640" cy="110" r="5" fill="#FF7A45" opacity="0"/>
+          </svg>
+          <div id="annotation"><span class="tag">DIVERGENCE FLAGGED</span>Sandwich attacker's real profit fell from <strong>0.258 ETH</strong> to <strong>exactly 0</strong> on this pool.</div>
+        </div>
+        <div class="trace-panel-footer">
+          <span>fee at parity: <strong>0.30%</strong></span>
+          <span>fee at max divergence: <strong>1.50%</strong></span>
+          <span>discount, corrective flow: <strong>0.15%</strong></span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="wrap">
+    <section class="reveal">
+      <div class="section-head">
+        <div class="section-kicker">Why this exists</div>
+        <h2>MEV bots don't announce themselves. Their trades just look wrong.</h2>
+        <p class="section-body-text">A sandwich attacker's front-run pushes the pool's price away from the truth. A JIT bot's liquidity shows up and leaves inside one block. Neither has to say what it's doing — the shape of the trade already gives it away, if something is watching for it.</p>
+      </div>
+      <div class="formula-block">
+        <div class="formula-cell">
+          <h3>Signal 1 — is this trade honest with the outside world?</h3>
+          <p>Compares the pool's own price against a trusted Chainlink reading. A swap that widens the gap is taxed. A swap that closes it is discounted.</p>
+          <div class="formula-code">deviationBps = |pool − oracle| / oracle<br>score = min(deviationBps, cap) / cap</div>
+        </div>
+        <div class="formula-cell">
+          <h3>Signal 2 — is this trade honest with this pool's own history?</h3>
+          <p>Compares this swap's price impact against a running average of what's normal for this specific pool — no fixed threshold, self-calibrating.</p>
+          <div class="formula-code">excessRatio = impact / baseline(EMA)<br>score = min(excessRatio / mult, 1)</div>
+        </div>
+        <div class="formula-cell full">
+          <h3>Combined — a noisy-OR, not an average</h3>
+          <p>An earlier version averaged the two scores — and testing found a real bug: it diluted a maximally-confident signal by half. Fixed to noisy-OR, verified with exact numbers before and after.</p>
+          <div class="formula-code">combined = 1 − (1 − s1)(1 − s2)
+fee = BASE + combined × (MAX − BASE)</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="reveal">
+      <div class="section-head">
+        <div class="section-kicker">One hook, four protocols</div>
+        <h2>Every integration is load-bearing.</h2>
+        <p class="section-body-text">Remove any one of these and a real, distinct MEV vector goes uncovered. Here's exactly what each does, with a real live-state mockup for each.</p>
+      </div>
+      <div class="mech-grid">
+        <div class="mech-card m1" onclick="location.href='#'">
+          <h3>Via Signal 1 + 2</h3>
+          <p>Same-block, oracle-aware, self-calibrating. Runs on every swap. Neither signal alone catches everything; combined via noisy-OR, they do.</p>
+          <div class="mech-mockup">
+            <div class="mm-row"><span>sandwich attacker profit</span><span class="mm-alarm">0.258 ETH</span></div>
+            <div class="mm-row"><span>on Ballast, same attack</span><span class="mm-safe">$0</span></div>
+          </div>
+        </div>
+        <div class="mech-card m2" onclick="location.href='#'">
+          <h3>Via JIT decay</h3>
+          <p>A bot adds liquidity, captures a swap's fee, leaves within one block. Fees earned are taxed 80%, decaying to 0% by block 10 — no cliff to dodge.</p>
+          <div class="mech-mockup">
+            <div class="mm-row"><span>held 2 blocks, live</span><span>real penalty</span></div>
+            <div class="mm-row"><span>captured</span><span class="mm-alarm">2,399,999,999,999 wei</span></div>
+          </div>
+        </div>
+        <div class="mech-card m3" onclick="location.href='#'">
+          <h3>Via OracleGuardian</h3>
+          <p>Signal 1 only matters if the oracle is trustworthy. A Reactive contract on another chain watches for suspicious changes and pauses autonomously.</p>
+          <div class="mech-mockup">
+            <div class="mm-row"><span>trigger → pause</span><span class="mm-safe">~12 seconds</span></div>
+            <div class="mm-row"><span>bot or keeper required</span><span class="mm-safe">none</span></div>
+          </div>
+        </div>
+        <div class="mech-card m4" onclick="location.href='#'">
+          <h3>Via ZKPriceGuardian</h3>
+          <p>Doesn't trust Chainlink alone. A zkTLS-proven price from an independent source is checked against it before anything is trusted.</p>
+          <div class="mech-mockup">
+            <div class="mm-row"><span>attested price</span><span>$2422.80</span></div>
+            <div class="mm-row"><span>divergence from Chainlink</span><span class="mm-safe">0.55%</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="reveal">
+      <div class="section-head">
+        <div class="section-kicker">The whole system, in one view</div>
+        <h2>Four layers, one hook — how they actually fit together.</h2>
+        <p class="section-body-text">The three oracle-safety layers exist for one reason: to protect Signal 1's one real dependency. Signal 2 and JIT don't depend on the oracle at all — they run independently, alongside it.</p>
+      </div>
+      <div class="chart-panel">
+        <svg id="architectureSvg" viewBox="0 0 700 460" style="width:100%;height:auto;">
+          <circle cx="220" cy="230" r="170" fill="none" stroke="#3A4B42" stroke-width="1.5"/>
+          <circle cx="220" cy="230" r="125" fill="none" stroke="#2DD4BF" stroke-width="1.5"/>
+          <circle cx="220" cy="230" r="80" fill="none" stroke="#F2C94C" stroke-width="1.5"/>
+          <circle cx="220" cy="230" r="40" fill="#00E0A0" opacity="0.9"/>
+          <text x="220" y="226" text-anchor="middle" font-family="Fraunces" font-weight="800" font-size="13" fill="#06120D">Signal 1</text>
+          <text x="220" y="240" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="#06120D">oracle read</text>
+
+          <line x1="251" y1="204" x2="330" y2="150" stroke="#3A4B42" stroke-width="1"/>
+          <circle cx="251" cy="204" r="2.5" fill="#00E0A0"/>
+          <text x="335" y="145" font-family="JetBrains Mono" font-size="11" fill="#F2C94C" font-weight="700">Layer 3 — ZKPriceGuardian</text>
+          <text x="335" y="161" font-family="JetBrains Mono" font-size="10" fill="#8FA69B">independent zkTLS price check</text>
+
+          <line x1="281" y1="180" x2="360" y2="205" stroke="#3A4B42" stroke-width="1"/>
+          <circle cx="281" cy="180" r="2.5" fill="#F2C94C"/>
+          <text x="365" y="200" font-family="JetBrains Mono" font-size="11" fill="#2DD4BF" font-weight="700">Layer 2 — OracleGuardian</text>
+          <text x="365" y="216" font-family="JetBrains Mono" font-size="10" fill="#8FA69B">cross-chain, autonomous pause</text>
+
+          <line x1="316" y1="151" x2="380" y2="255" stroke="#3A4B42" stroke-width="1"/>
+          <circle cx="316" cy="151" r="2.5" fill="#2DD4BF"/>
+          <text x="385" y="250" font-family="JetBrains Mono" font-size="11" fill="#9CB0A6" font-weight="700">Layer 1 — Timelock</text>
+          <text x="385" y="266" font-family="JetBrains Mono" font-size="10" fill="#8FA69B">24h delay, always on, no dependency</text>
+
+          <rect x="380" y="300" width="180" height="60" rx="4" fill="#131A16" stroke="#00E0A0" stroke-width="1.5"/>
+          <text x="470" y="325" text-anchor="middle" font-family="Fraunces" font-weight="700" font-size="14" fill="#F2F0E8">Signal 2</text>
+          <text x="470" y="343" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#8FA69B">structural impact — independent</text>
+
+          <path d="M 260 230 Q 330 280 380 330" fill="none" stroke="#00E0A0" stroke-width="1.5" stroke-dasharray="3 3"/>
+
+          <rect x="600" y="300" width="80" height="60" rx="4" fill="#00E0A0"/>
+          <text x="640" y="325" text-anchor="middle" font-family="Fraunces" font-weight="800" font-size="13" fill="#06120D">FEE</text>
+          <text x="640" y="342" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="#06120D">0.15–1.50%</text>
+          <line x1="560" y1="330" x2="600" y2="330" stroke="#00E0A0" stroke-width="1.5"/>
+
+          <rect x="30" y="390" width="180" height="50" rx="4" fill="#131A16" stroke="#FF7A45" stroke-width="1.5"/>
+          <text x="120" y="412" text-anchor="middle" font-family="Fraunces" font-weight="700" font-size="13" fill="#F2F0E8">Liquidity event</text>
+          <text x="120" y="428" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#8FA69B">add / remove — separate path</text>
+          <line x1="210" y1="415" x2="280" y2="415" stroke="#FF7A45" stroke-width="1.5"/>
+          <rect x="280" y="390" width="120" height="50" rx="4" fill="#FF7A45"/>
+          <text x="340" y="412" text-anchor="middle" font-family="Fraunces" font-weight="800" font-size="12" fill="#06120D">JIT check</text>
+          <text x="340" y="428" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="#06120D">same-block?</text>
+          <line x1="400" y1="415" x2="460" y2="415" stroke="#FF7A45" stroke-width="1.5"/>
+          <rect x="460" y="390" width="140" height="50" rx="4" fill="#131A16" stroke="#FF7A45" stroke-width="1.5"/>
+          <text x="530" y="412" text-anchor="middle" font-family="Fraunces" font-weight="700" font-size="12" fill="#F2F0E8">PENALTY</text>
+          <text x="530" y="428" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="#8FA69B">80% → 0%, 10 blocks</text>
+        </svg>
+        <p style="font-family:var(--mono);font-size:12px;color:var(--text-soft);margin-top:10px;">Rings = trust protecting the oracle. Right = detection combining into a fee. Bottom = JIT, entirely separate, since liquidity events never touch a swap at all.</p>
+      </div>
+    </section>
+
+    <section class="reveal">
+      <div class="section-head">
+        <div class="section-kicker">The real mechanism, step by step</div>
+        <h2>Not just Signal 1 and Signal 2 — all four, in full.</h2>
+      </div>
+
+      <div class="walkthrough">
+        <div>
+          <div class="wt-num">the toll</div>
+          <div class="wt-title">JIT liquidity defense</div>
+          <div class="wt-steps">
+            <div class="wt-step"><span class="wt-step-num">1</span><div class="wt-step-body"><b>beforeAddLiquidity records the block</b><span>Every position's exact add-block is tracked, keyed to (pool, owner, range, salt).</span></div></div>
+            <div class="wt-step"><span class="wt-step-num">2</span><div class="wt-step-body"><b>afterRemoveLiquidity checks how long it was held</b><span>blocksHeld = block.number − addedAtBlock.</span></div></div>
+            <div class="wt-step"><span class="wt-step-num">3</span><div class="wt-step-body"><b>a decaying penalty applies to fees earned, never principal</b><span>80% at same-block, linearly to 0% by block 10.</span></div></div>
+          </div>
+          <div class="wt-proof">live: real position, 2 blocks held, real penalty event on-chain, no revert</div>
+        </div>
+        <div class="wt-visual">
+          <div class="chart-panel-title mono" style="margin-bottom:14px;"><span>penalty decay, verified exact</span><span>80% → 0%, 10 blocks</span></div>
+          <svg id="decayChart" viewBox="0 0 400 260" style="width:100%;height:auto;"></svg>
+        </div>
+      </div>
+
+      <div class="walkthrough">
+        <div>
+          <div class="wt-num">the relay</div>
+          <div class="wt-title">OracleGuardian</div>
+          <div class="wt-steps">
+            <div class="wt-step"><span class="wt-step-num">1</span><div class="wt-step-body"><b>A queued oracle change fires a real event on Sepolia</b><span>OracleChangeQueued, watched by a Reactive Smart Contract on Lasna.</span></div></div>
+            <div class="wt-step"><span class="wt-step-num">2</span><div class="wt-step-body"><b>The Reactive contract reacts autonomously</b><span>No off-chain bot, no server — the reaction is itself an on-chain contract.</span></div></div>
+            <div class="wt-step"><span class="wt-step-num">3</span><div class="wt-step-body"><b>A cross-chain callback pauses the pool on Sepolia</b><span>Verified: real trigger to real pause in one block, ~12 seconds.</span></div></div>
+          </div>
+          <div class="wt-proof">live: real cross-chain pause proven, block 11590976 → 11590977</div>
+        </div>
+        <div class="wt-visual">
+          <div class="chart-panel-title mono" style="margin-bottom:14px;"><span>real cross-chain sequence</span><span>~12 seconds, one block</span></div>
+          <svg viewBox="0 0 400 200" style="width:100%;height:auto;color:var(--text);">
+            <circle cx="70" cy="100" r="34" fill="none" stroke="currentColor" stroke-width="2"/>
+            <text x="70" y="104" text-anchor="middle" font-family="JetBrains Mono" font-size="12" fill="currentColor">Lasna</text>
+            <circle cx="330" cy="100" r="34" fill="none" stroke="currentColor" stroke-width="2"/>
+            <text x="330" y="104" text-anchor="middle" font-family="JetBrains Mono" font-size="12" fill="currentColor">Sepolia</text>
+            <line x1="104" y1="100" x2="296" y2="100" stroke="#00E0A0" stroke-width="2" stroke-dasharray="4 4"/>
+            <text x="200" y="80" text-anchor="middle" font-family="JetBrains Mono" font-size="13" fill="#00E0A0" font-weight="700">~12s</text>
+          </svg>
+        </div>
+      </div>
+
+      <div class="walkthrough">
+        <div>
+          <div class="wt-num">the witness</div>
+          <div class="wt-title">ZKPriceGuardian</div>
+          <div class="wt-steps">
+            <div class="wt-step"><span class="wt-step-num">1</span><div class="wt-step-body"><b>A zkTLS proof is generated off-chain, from a live source</b><span>Reclaim Protocol proves a real HTTPS response without a trusted intermediary.</span></div></div>
+            <div class="wt-step"><span class="wt-step-num">2</span><div class="wt-step-body"><b>The proof is verified and submitted on-chain</b><span>ZKPriceAttestor checks the cryptographic proof itself, not just a signed number.</span></div></div>
+            <div class="wt-step"><span class="wt-step-num">3</span><div class="wt-step-body"><b>The two independent prices are compared</b><span>A divergence ≥5% from Chainlink pauses the pool.</span></div></div>
+          </div>
+          <div class="wt-proof">live: real proof, $2422.80, submitted and checked on-chain</div>
+        </div>
+        <div class="wt-visual">
+          <div class="chart-panel-title mono" style="margin-bottom:14px;"><span>real proof, decoded</span><span>submitted live</span></div>
+          <div style="font-family:var(--mono);font-size:13px;padding:10px 0;">
+            <div class="gauge-row"><span>Attested price</span><span class="g-val">$2422.80</span></div>
+            <div class="gauge-row"><span>Chainlink price, same block</span><span class="g-val">$2436.21</span></div>
+            <div class="gauge-row"><span>Divergence</span><span class="g-val ok">0.55% — well within bound</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="reveal">
+      <div class="section-head">
+        <div class="section-kicker">The stack</div>
+        <h2>What Ballast is actually built on.</h2>
+      </div>
+      <div class="stack-strip">
+        <div class="stack-item"><div class="role">the hook</div><div class="name">Uniswap v4</div></div>
+        <div class="stack-item"><div class="role">the relay</div><div class="name">Reactive Network</div></div>
+        <div class="stack-item"><div class="role">the witness</div><div class="name">Reclaim zkTLS</div></div>
+        <div class="stack-item"><div class="role">price feed</div><div class="name">Chainlink</div></div>
+        <div class="stack-item"><div class="role">build + fuzz</div><div class="name">Foundry</div></div>
+        <div class="stack-item"><div class="role">network</div><div class="name">Sepolia</div></div>
+      </div>
+
+      <div class="section-head" style="margin-top:64px;">
+        <div class="section-kicker">Deployed and verifiable</div>
+        <h2>Every address, real and checkable.</h2>
+      </div>
+      <div class="deployed-grid">
+        <div class="deployed-card"><a href="https://sepolia.etherscan.io/address/0xC321e31f42c9630Cdc54bcd304Cbb70B8B1769C5" target="_blank"><div class="dc-name">BallastHook</div><div class="dc-chain">Sepolia</div><div class="dc-addr">0xC321e31f42c9630Cdc54bcd304Cbb70B8B1769C5</div></a></div>
+        <div class="deployed-card"><a href="https://sepolia.etherscan.io/address/0x9008B62b056A7F15C7cdd48561cfbc32e0F818DD" target="_blank"><div class="dc-name">PoolManager</div><div class="dc-chain">Sepolia</div><div class="dc-addr">0x9008B62b056A7F15C7cdd48561cfbc32e0F818DD</div></a></div>
+        <div class="deployed-card"><a href="https://sepolia.etherscan.io/address/0xed58A0D946eBBEC2A732d1Aeef66d39f93e619Ed" target="_blank"><div class="dc-name">MultiGuardian</div><div class="dc-chain">Sepolia</div><div class="dc-addr">0xed58A0D946eBBEC2A732d1Aeef66d39f93e619Ed</div></a></div>
+        <div class="deployed-card"><a href="https://sepolia.etherscan.io/address/0x300c0da3d1B85fAac02eEfd6186eDC2B34f2BF55" target="_blank"><div class="dc-name">ZKPriceGuardian</div><div class="dc-chain">Sepolia</div><div class="dc-addr">0x300c0da3d1B85fAac02eEfd6186eDC2B34f2BF55</div></a></div>
+        <div class="deployed-card"><a href="https://sepolia.etherscan.io/address/0x9D8A1CB49D24C90C739f9F8986d207b7E71348bB" target="_blank"><div class="dc-name">OracleGuardianCallback</div><div class="dc-chain">Sepolia</div><div class="dc-addr">0x9D8A1CB49D24C90C739f9F8986d207b7E71348bB</div></a></div>
+        <div class="deployed-card"><a href="https://lasna.reactscan.net/address/0x38F87873Db0292F04D201E9A7f4C2b654974Adb1" target="_blank"><div class="dc-name">OracleGuardianReactive</div><div class="dc-chain">Reactive Lasna</div><div class="dc-addr">0x38F87873Db0292F04D201E9A7f4C2b654974Adb1</div></a></div>
+      </div>
+    </section>
+
+    <section class="reveal">
+      <div class="section-head">
+        <div class="section-kicker">Exactly what passes locally</div>
+        <h2>Numbers from the real suite, nothing claimed that hasn't run.</h2>
+      </div>
+      <div class="stat-cards">
+        <div class="stat-card sc1"><div class="sc-val">114</div><div class="sc-lbl">named tests, all passing</div></div>
+        <div class="stat-card sc2"><div class="sc-val">384,000</div><div class="sc-lbl">invariant operations, 0 violations</div></div>
+        <div class="stat-card sc3"><div class="sc-val">512</div><div class="sc-lbl">fuzz runs</div></div>
+        <div class="stat-card sc4"><div class="sc-val">0</div><div class="sc-lbl">High/Medium static-analysis findings</div></div>
+      </div>
+
+      <div class="disclosure">
+        <b>WHAT'S NOT YET PROVEN LIVE</b>
+        <p>OracleGuardian's automated cross-chain trigger worked once with hard, verified proof. On repeat attempts across multiple deployments, Reactive's Lasna testnet has shown inconsistent processing — a documented testnet characteristic, not a fault in our contract logic. Sandwich-attack and reentrancy defenses are deliberately verified via adversarial Foundry tests rather than live mempool manipulation, since reliably reproducing same-block multi-actor ordering on a public testnet isn't a meaningful improvement over a controlled, repeatable test.</p>
+      </div>
+    </section>
+
+    <section class="reveal">
+      <div class="section-head">
+        <div class="section-kicker">The evidence — click any row to verify</div>
+        <h2>Nothing here is asserted without its receipt.</h2>
+      </div>
+      <table class="ledger" id="evidenceLedger">
+        <tr><th>Mechanism</th><th>Live proof</th><th>Status</th></tr>
+      </table>
+    </section>
+
+    <section class="final-cta reveal">
+      <h2>Read the math, or just launch it.</h2>
+      <div class="hero-ctas">
+        <button class="btn-primary" onclick="showView('app')">Launch App</button>
+        <button class="btn-secondary" onclick="showView('docs')">Read the docs</button>
+      </div>
+    </section>
+  </div>
+
+  <footer>
+    <div class="wrap">
+      <div class="footer-grid">
+        <div>
+          <div class="wordmark-mark" style="font-size:22px;">Ballast</div>
+          <p style="color:var(--text-soft);margin-top:10px;max-width:280px;">Two readings. When they disagree, that's the alarm.</p>
+        </div>
+        <div><h4>PRODUCT</h4><a onclick="showView('app')">App</a><a onclick="showView('docs')">Docs</a><a href="https://github.com/dny-777/ballast" target="_blank">GitHub</a></div>
+        <div><h4>STACK</h4><a href="https://docs.uniswap.org/contracts/v4/overview" target="_blank">Uniswap v4</a><a href="https://reactive.network" target="_blank">Reactive Network</a><a href="https://reclaimprotocol.org" target="_blank">Reclaim zkTLS</a></div>
+        <div><h4>ON-CHAIN</h4><a href="https://sepolia.etherscan.io/address/0xC321e31f42c9630Cdc54bcd304Cbb70B8B1769C5" target="_blank">Hook · Sepolia</a><a href="https://lasna.reactscan.net/address/0x38F87873Db0292F04D201E9A7f4C2b654974Adb1" target="_blank">Reactive · Lasna</a></div>
+      </div>
+      <div class="footer-bottom"><span>Ballast — UHI10, fair-flow track</span><span>combined = 1 − (1 − s1)(1 − s2)</span></div>
+    </div>
+  </footer>
+</div>
+
+<!-- ============ APP VIEW ============ -->
+<div class="view" id="view-app">
+  <div class="wrap" style="padding-top:40px;">
+    <div class="section-kicker">Live dashboard</div>
+    <h2 style="margin-bottom:6px;">Ballast, on the pool, right now.</h2>
+    <p class="section-body-text" style="margin-bottom:0;">Connect a Sepolia wallet to swap. Everything else on this screen reads the live contract state.</p>
+    <div class="app-shell">
+      <div class="app-panel">
+        <div class="app-panel-title"><span>Swap</span><span id="walletStatus">not connected</span></div>
+        <div class="swap-row"><input type="text" value="1.0" id="amountIn"><span class="swap-token">ETH</span></div>
+        <div class="swap-divider">↓</div>
+        <div class="swap-row"><input type="text" value="—" id="amountOut" readonly><span class="swap-token">DEMO</span></div>
+        <div class="swap-fee-readout">this swap's live fee reading: <span class="fee-val" id="feeReadout">0.30%</span></div>
+        <button class="btn-primary" style="width:100%;margin-top:16px;" id="connectBtn">Connect wallet</button>
+        <div id="walletBanner" style="display:none;margin-top:14px;padding:12px 14px;font-family:var(--mono);font-size:12.5px;border-left:3px solid var(--alarm);background:var(--panel-2);"></div>
+      </div>
+      <div class="dash-grid">
+        <div class="dash-cell">
+          <h4>Signal readout</h4>
+          <div class="gauge-row"><span>Signal 1 (oracle deviation)</span><span class="g-val ok">0.04</span></div>
+          <div class="bar-track"><div class="bar-fill" style="width:4%;"></div></div>
+          <div class="gauge-row" style="margin-top:12px;"><span>Signal 2 (structural impact)</span><span class="g-val ok">0.02</span></div>
+          <div class="bar-track"><div class="bar-fill" style="width:2%;"></div></div>
+          <div class="gauge-row" style="margin-top:12px;"><span>Combined score</span><span class="g-val">0.06</span></div>
+          <div class="gauge-row"><span>Resulting fee</span><span class="g-val ok">0.30%</span></div>
+        </div>
+        <div class="dash-cell">
+          <h4>Pool state</h4>
+          <div class="gauge-row"><span>Pool</span><span class="g-val">ETH / DEMO</span></div>
+          <div class="gauge-row"><span>Status</span><span class="g-val ok">unpaused</span></div>
+          <div class="gauge-row"><span>Chainlink ETH/USD</span><span class="g-val">$2,468.18</span></div>
+          <div class="gauge-row"><span>Hook</span><span class="g-val" style="font-size:11px;">0xC321…9C5</span></div>
+        </div>
+        <div class="dash-cell">
+          <h4>Guardian status</h4>
+          <div class="guardian-light"><span class="dot-live"></span><div><div>Timelock</div><div class="addr">24h delay, always on</div></div></div>
+          <div class="guardian-light"><span class="dot-live"></span><div><div>OracleGuardian</div><div class="addr">0x9D8A…8bB — Reactive-armed</div></div></div>
+          <div class="guardian-light"><span class="dot-live"></span><div><div>ZKPriceGuardian</div><div class="addr">0x300c…F55 — last check $2422.80</div></div></div>
+        </div>
+        <div class="dash-cell">
+          <h4>JIT decay, if you remove now</h4>
+          <div style="display:flex;justify-content:center;padding:14px 0;">
+            <svg viewBox="0 0 100 100" style="width:100px;"><circle cx="50" cy="50" r="42" fill="none" stroke="#1C2621" stroke-width="6"/><circle cx="50" cy="50" r="42" fill="none" stroke="#FF7A45" stroke-width="6" stroke-dasharray="264" stroke-dashoffset="264" transform="rotate(-90 50 50)"/></svg>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section-head" style="margin-top:64px;">
+      <div class="section-kicker">Network & contracts</div>
+      <h2 style="font-size:26px;">Everything this app talks to.</h2>
+    </div>
+    <div class="deployed-grid" style="margin-top:0;">
+      <div class="deployed-card"><a href="https://sepolia.etherscan.io/address/0xC321e31f42c9630Cdc54bcd304Cbb70B8B1769C5" target="_blank"><div class="dc-name">BallastHook</div><div class="dc-chain">Sepolia · chainId 11155111</div><div class="dc-addr">0xC321e31f42c9630Cdc54bcd304Cbb70B8B1769C5</div></a></div>
+      <div class="deployed-card"><a href="https://sepolia.etherscan.io/address/0x9008B62b056A7F15C7cdd48561cfbc32e0F818DD" target="_blank"><div class="dc-name">PoolManager</div><div class="dc-chain">Sepolia · chainId 11155111</div><div class="dc-addr">0x9008B62b056A7F15C7cdd48561cfbc32e0F818DD</div></a></div>
+      <div class="deployed-card"><a href="https://sepolia.etherscan.io/address/0x11aFe39b01189774a5D11f041BB55dfc888098B0" target="_blank"><div class="dc-name">Demo token</div><div class="dc-chain">Sepolia · chainId 11155111</div><div class="dc-addr">0x11aFe39b01189774a5D11f041BB55dfc888098B0</div></a></div>
+      <div class="deployed-card"><a href="https://lasna.reactscan.net/address/0x38F87873Db0292F04D201E9A7f4C2b654974Adb1" target="_blank"><div class="dc-name">OracleGuardianReactive</div><div class="dc-chain">Reactive Lasna · chainId 5318007</div><div class="dc-addr">0x38F87873Db0292F04D201E9A7f4C2b654974Adb1</div></a></div>
+    </div>
+    <p class="section-body-text" style="margin-top:24px;font-size:14.5px;">Need Sepolia test ETH? Try the <a href="https://sepoliafaucet.com" target="_blank" style="color:var(--safe);text-decoration:underline;">Alchemy Sepolia faucet</a> or <a href="https://www.infura.io/faucet/sepolia" target="_blank" style="color:var(--safe);text-decoration:underline;">Infura's faucet</a>. Full source, test suite, and every real transaction referenced on this page are in the <a href="https://github.com/dny-777/ballast" target="_blank" style="color:var(--safe);text-decoration:underline;">GitHub repository</a>.</p>
+  </div>
+</div>
+
+<!-- ============ DOCS VIEW ============ -->
+<div class="view" id="view-docs">
+  <div class="wrap" style="padding-top:40px; padding-bottom:80px;">
+    <div class="section-kicker">Documentation</div>
+    <h2>How Ballast works, in full.</h2>
+    <p class="section-body-text">Plain English first, then the real math, the real bugs, and every real address — nothing summarized away.</p>
+    <div class="docs-shell">
+      <nav class="docs-nav">
+        <a href="#d-problem"><span class="docs-nav-num">01</span>The problem</a>
+        <a href="#d-signals"><span class="docs-nav-num">02</span>The two signals</a>
+        <a href="#d-jit"><span class="docs-nav-num">03</span>JIT defense</a>
+        <a href="#d-oracle"><span class="docs-nav-num">04</span>Oracle safety</a>
+        <a href="#d-bugs"><span class="docs-nav-num">05</span>Real bugs found</a>
+        <a href="#d-security"><span class="docs-nav-num">06</span>Security posture</a>
+        <a href="#d-addresses"><span class="docs-nav-num">07</span>Contract addresses</a>
+        <a href="#d-tests"><span class="docs-nav-num">08</span>Test coverage</a>
+        <a href="#d-refs"><span class="docs-nav-num">09</span>References</a>
+      </nav>
+      <div class="docs-content">
+        <h3 id="d-problem">The problem: value that leaves without asking</h3>
+        <p>A liquidity provider deposits into a pool expecting to earn fees. What isn't obvious is how much of that fee income is quietly handed straight back out to two kinds of traders who never had to reveal what they were doing. The first is the sandwich attacker, who pushes the pool's price away from the true market price on purpose, trades against the LP at the distorted price, then lets an honest arbitrageur correct it back — collecting the difference. The second is the JIT (just-in-time) liquidity bot, which adds a large, precisely-ranged position moments before a known large swap, captures a disproportionate share of that single swap's fee, and withdraws immediately after — inside one block, with almost no price risk taken on at all.</p>
+        <p>Neither attacker has to announce their intent. A sandwich attack looks, on the surface, like three ordinary swaps. A JIT position looks like ordinary liquidity provision. What gives both away is the <i>shape</i> of the activity — if something is actually watching for it.</p>
+
+        <h3 id="d-signals">The two signals</h3>
+        <p>Signal 1 asks a simple question: does this swap push the pool's price further from, or closer to, a trusted outside reading? It compares the pool's own price against Chainlink's ETH/USD feed. A swap that widens that gap is charged more; a swap that closes it is charged less.</p>
+        <div class="formula-code">deviationBps = |pool − oracle| / oracle
+score1 = min(deviationBps, cap) / cap</div>
+        <p>Signal 2 asks a different question: is this swap unusually large for <i>this specific pool</i>, right now? Rather than a fixed size threshold — which would need constant recalibration as a pool's real volume changes — it compares the swap's actual price impact against a running exponential moving average of what's structurally normal for that pool.</p>
+        <div class="formula-code">excessRatio = impact / baseline(EMA)
+score2 = min(excessRatio / mult, 1)</div>
+        <div class="docs-callout alarm">
+          <p><b>A real bug, found and fixed:</b> the original design averaged the two scores together. Real testing showed this quietly diluted a maximally-confident single signal by roughly half — a swap that Signal 1 alone would have flagged at full severity got cut down simply because Signal 2 had nothing to add. Replaced with a noisy-OR combination, which correctly treats either signal alone as sufficient grounds for a full response.</p>
+        </div>
+        <div class="formula-code">combined = 1 − (1 − s1)(1 − s2)
+fee = BASE + combined × (MAX_SURCHARGE − BASE)</div>
+        <p class="docs-ref"><b>Theoretical grounding:</b> both signals independently correspond to recognized loss-versus-rebalancing (LVR) mitigation strategies described in the academic literature (Milionis, Moallemi, Roughgarden, Zhang, 2022) — arrived at through iteration and testing, not derived from the papers, but genuinely validated by them after the fact. Full derivation and citation in the repository's <a href="https://github.com/dny-777/ballast/blob/main/MATH.md" target="_blank">MATH.md</a>.</p>
+
+        <h3 id="d-jit">JIT liquidity defense: taxing the drive-by</h3>
+        <p>Neither signal above ever sees a JIT attack, because neither one watches liquidity events at all — they only run during a swap. JIT liquidity needs its own, entirely separate defense.</p>
+        <p>The mechanism tracks the exact block a position was added, keyed to the specific pool, owner, tick range, and salt. When that same position is removed, it checks how many blocks it was actually held for. If liquidity was added and removed within the same block — the textbook JIT signature — 80% of the fees that position earned (never its deposited principal) are redirected to the pool's honest, long-term LPs instead. That penalty decays linearly, reaching 0% by the 10th block held.</p>
+        <div class="formula-code">blocksHeld = block.number − liquidityAddedAtBlock[positionKey]
+penaltyBps = JIT_MAX_PENALTY_BPS × (JIT_DECAY_BLOCKS − blocksHeld) / JIT_DECAY_BLOCKS</div>
+        <div class="docs-callout">
+          <p><b>Why a decay, not a hard cutoff:</b> an earlier version simply checked "same block, yes or no." That has a real, exploitable weakness — a bot patient enough to wait exactly one extra block pays nothing at all. A smooth decay removes that cliff entirely.</p>
+        </div>
+        <p>Verified exact, not approximate: a position removed at precisely the halfway point (5 of 10 blocks) produced a penalty of exactly half the same-block value — 11,999,999,999,999,999 wei versus 23,999,999,999,999,999 wei. Verified live on Sepolia: a real position held for 2 real blocks produced a real, correctly-scaled, nonzero penalty, confirmed both by the emitted event and by a persisting on-chain reserve balance afterward.</p>
+
+        <h3 id="d-oracle">Oracle safety: three independent layers</h3>
+        <p>Signal 1's entire value depends on one assumption: that the oracle it reads from is telling the truth. Three separate, layered defenses protect that single dependency, so that no one of them failing is catastrophic on its own.</p>
+        <h4>Layer 1 — Timelock</h4>
+        <p>A 24-hour delay on every oracle and guardian change. Always on, with no dependency on any external system — the simplest, most reliable layer, by design.</p>
+        <h4>Layer 2 — OracleGuardian</h4>
+        <p>A Reactive Smart Contract, deployed on Reactive Network's Lasna testnet, subscribes to oracle-change events emitted on Sepolia. When one fires, the contract reacts entirely autonomously — no off-chain bot, no server, no keeper — and triggers a cross-chain callback that pauses the pool. Proven live: a real, queued oracle change produced a real, confirmed pause in a single block, roughly 12 seconds end to end.</p>
+        <h4>Layer 3 — ZKPriceGuardian</h4>
+        <p>Even a real, honest Chainlink feed is still one single source. ZKPriceGuardian checks it against an independent, cryptographically-verified reading obtained via Reclaim Protocol's zkTLS — proving a real HTTPS response actually occurred, without needing to trust whoever relays that proof. If the two sources diverge by 5% or more, the pool pauses. Proven live: a real proof attesting $2422.80 was generated, submitted on-chain, and checked directly against Chainlink's own live reading in the same transaction.</p>
+
+        <h3 id="d-bugs">Real bugs found, not hypothetical ones</h3>
+        <p><b>The guardian-swap timelock vulnerability.</b> On a final, deliberate review of every externally-callable function, we found that changing an already-active guardian had no timelock at all — the only trust-affecting change in the entire contract without one. A compromised configurer could have instantly disabled both OracleGuardian and ZKPriceGuardian, silently, before ever attempting a malicious oracle change — meaning neither safety layer would ever get a chance to fire. We wrote a test that first demonstrated this exact exploit and confirmed it passed, proving the vulnerability was real, then applied the same 24-hour timelock pattern already proven for oracle changes, and confirmed the identical test then correctly failed — direct, before-and-after evidence that the fix genuinely works, not just an assertion that it should.</p>
+        <p><b>The missing receive() for native ETH.</b> Every one of this project's 100+ local tests used two ERC20 tokens for its pool currencies — never native ETH. That meant a real, production-breaking bug went completely undetected: the hook had no way to accept an incoming ETH transfer at all, so any skim (whether from the swap fee mechanism or the JIT penalty) that needed to deliver native ETH to the contract would simply revert. This was only found because we insisted on a real, live JIT demonstration against a real currency0=ETH pool on Sepolia, and it reverted. Fixed with a minimal <span class="mono">receive() external payable {}</span>, then closed permanently with three new, dedicated native-ETH tests, and confirmed working with a successful live re-run immediately after.</p>
+
+        <h3 id="d-security">Security posture</h3>
+        <p>Static analysis (Slither) returns 0 High or Medium findings in first-party code. Every Low/Informational finding was individually investigated rather than dismissed — including one that initially looked like a real gap (a deprecated Chainlink field, <span class="mono">answeredInRound</span>) and turned out, on research, to already match current best practice. Full triage in <a href="https://github.com/dny-777/ballast/blob/main/STATIC-ANALYSIS.md" target="_blank">STATIC-ANALYSIS.md</a>.</p>
+        <p>Reentrancy is tested adversarially with a real malicious token attempting a nested call during the exact window a static analyzer would flag as risky — confirmed blocked by Uniswap v4's own protocol-level lock, not just assumed safe.</p>
+
+        <h3 id="d-addresses">Contract addresses (Sepolia)</h3>
+        <table class="docs-addr-table">
+          <tr><td>BallastHook</td><td>0xC321e31f42c9630Cdc54bcd304Cbb70B8B1769C5</td></tr>
+          <tr><td>PoolManager</td><td>0x9008B62b056A7F15C7cdd48561cfbc32e0F818DD</td></tr>
+          <tr><td>Demo token</td><td>0x11aFe39b01189774a5D11f041BB55dfc888098B0</td></tr>
+          <tr><td>MultiGuardian</td><td>0xed58A0D946eBBEC2A732d1Aeef66d39f93e619Ed</td></tr>
+          <tr><td>ZKPriceGuardian</td><td>0x300c0da3d1B85fAac02eEfd6186eDC2B34f2BF55</td></tr>
+          <tr><td>OracleGuardianCallback</td><td>0x9D8A1CB49D24C90C739f9F8986d207b7E71348bB</td></tr>
+          <tr><td>OracleGuardianReactive (Lasna)</td><td>0x38F87873Db0292F04D201E9A7f4C2b654974Adb1</td></tr>
+        </table>
+
+        <h3 id="d-tests">Test coverage</h3>
+        <p>114 named tests across every mechanism, 384,000 invariant operations across 3 suites with zero violations, 512 fuzz runs, and 0 High/Medium static-analysis findings. This includes dedicated pool-isolation tests (proving toxic activity in one pool never leaks into another sharing the same hook), a direct comparison suite benchmarking Ballast against volatility-only and size-only fee designs, and gas benchmarks for every new JIT liquidity hook. Full breakdown and instructions to run every test yourself are in the repository README.</p>
+
+        <h3 id="d-refs">References</h3>
+        <p class="docs-ref">Milionis, Moallemi, Roughgarden, Zhang (2022). <i>Automated Market Making and Loss-Versus-Rebalancing.</i> The foundational LVR framework both signals independently correspond to.</p>
+        <p class="docs-ref">"Optimal Dynamic Fees for Automated Market Makers" (2026). A formal stochastic-control model describing an oracle-deviation fee term matching Signal 1's structure, arrived at independently.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/6.13.4/ethers.umd.min.js"></script>
+<script>
+  const evidenceData = [
+    ["Core dual-signal fee","Real swap, real fee response to live $2,468 ETH price","proven","https://sepolia.etherscan.io/address/0xC321e31f42c9630Cdc54bcd304Cbb70B8B1769C5","cast call 0xC321e31f42c9630Cdc54bcd304Cbb70B8B1769C5 \"previewFee(...)\""],
+    ["End-to-end frontend swap","Real wallet, real 0.001 ETH swap, decoded call confirms our real SwapRouter + selector","proven","https://sepolia.etherscan.io/tx/0x59779ec6f5999528d942d9ce338244a9125cbbb6d9a85c5f696d0e549c950851","decode the tx input - target 0xC14c50A1..., selector 2229d0b4 matches swap(...)"],
+    ["Sandwich attack defense","Real attacker profit: 0.258 ETH → exactly 0","proven","https://github.com/dny-777/ballast/blob/main/test/SandwichAttack.t.sol","forge test --match-contract SandwichAttackTest -vv"],
+    ["JIT liquidity defense","Real position, 2 blocks held, real penalty event on-chain","proven","https://sepolia.etherscan.io/address/0xC321e31f42c9630Cdc54bcd304Cbb70B8B1769C5","real JitPenaltyApplied event, block 11607203"],
+    ["Guardian-swap timelock fix","Real vulnerability, fixed, re-verified live","proven","https://github.com/dny-777/ballast/blob/main/test/BallastHook.t.sol","forge test --match-test test_VULNERABILITY_FIXED -vv"],
+    ["Native ETH receive() fix","Real revert found live, fixed, re-verified live","proven","https://github.com/dny-777/ballast/blob/main/test/NativeEth.t.sol","forge test --match-contract NativeEthTest -vv"],
+    ["OracleGuardian (Reactive)","Real cross-chain pause, ~12s, one block","proven","https://lasna.reactscan.net/address/0x38F87873Db0292F04D201E9A7f4C2b654974Adb1","block 11590976 → 11590977"],
+    ["ZKPriceGuardian (zkTLS)","Real proof, $2422.80, verified on-chain","proven","https://sepolia.etherscan.io/address/0x300c0da3d1B85fAac02eEfd6186eDC2B34f2BF55","cast call ...latestAttestation()"],
+    ["Reentrancy defense","Real malicious token, real attempt, blocked by v4's own lock","proven","https://github.com/dny-777/ballast/blob/main/test/ReentrancyTest.t.sol","forge test --match-contract ReentrancyTest -vv"]
+  ];
+  const ledgerEl = document.getElementById('evidenceLedger');
+  evidenceData.forEach((row, i) => {
+    const tr = document.createElement('tr');
+    tr.className = 'led-row';
+    tr.innerHTML = `<td>${row[0]}</td><td>${row[1]}</td><td class="ok">✓ ${row[2]}</td>`;
+    ledgerEl.appendChild(tr);
+    const detail = document.createElement('tr');
+    detail.className = 'led-detail';
+    detail.innerHTML = `<td colspan="3">Verify it yourself: <a href="${row[3]}" target="_blank">${row[3]}</a><br><span class="verify-hint">${row[4]}</span></td>`;
+    ledgerEl.appendChild(detail);
+  });
+
+  function showView(name) {
+    document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+    document.getElementById('view-' + name).classList.add('active');
+    document.querySelectorAll('.nav-links a').forEach(a => a.classList.remove('active'));
+    const navEl = document.getElementById('nav-' + name);
+    if (navEl) navEl.classList.add('active');
+    window.scrollTo(0, 0);
+    if (name === 'landing') setTimeout(() => { runHeroAnimation(); drawDecayChart(); animateGauge(); }, 100);
+  }
+
+  function runHeroAnimation() {
+    const s1 = document.getElementById('s1path');
+    const s2 = document.getElementById('s2path');
+    const flagLine = document.getElementById('flagLine');
+    const flagDot = document.getElementById('flagDot');
+    const annotation = document.getElementById('annotation');
+    const s1d = "M0,110 C120,108 220,112 320,110 C420,108 500,100 560,86 C610,74 630,58 640,50 C660,36 720,26 800,24 C880,22 950,26 1000,28";
+    const s2d = "M0,110 C120,111 220,109 320,110 C420,111 500,113 560,120 C610,130 630,144 640,156 C660,180 720,190 800,192 C880,194 950,192 1000,190";
+    s1.setAttribute('d', s1d); s2.setAttribute('d', s2d);
+    const len1 = s1.getTotalLength(); const len2 = s2.getTotalLength();
+    [[s1,len1],[s2,len2]].forEach(([p,len]) => { p.style.transition='none'; p.style.strokeDasharray = len; p.style.strokeDashoffset = len; });
+    flagLine.style.opacity = 0; flagDot.style.opacity = 0; annotation.style.opacity = 0;
+    requestAnimationFrame(() => {
+      s1.style.transition = 'stroke-dashoffset 2.2s ease-out';
+      s2.style.transition = 'stroke-dashoffset 2.2s ease-out';
+      s1.style.strokeDashoffset = 0; s2.style.strokeDashoffset = 0;
+    });
+    setTimeout(() => {
+      flagLine.style.transition = 'opacity 0.4s ease'; flagDot.style.transition = 'opacity 0.4s ease';
+      flagLine.style.opacity = 1; flagDot.style.opacity = 1;
+      annotation.style.left = '540px'; annotation.style.top = '16px'; annotation.style.opacity = 1;
+    }, 1900);
+  }
+
+  function drawDecayChart() {
+    const svg = document.getElementById('decayChart');
+    if (!svg) return;
+    const W = 400, H = 260, PAD = 40;
+    const x = b => PAD + (b/10)*(W-PAD-20);
+    const y = p => (H-PAD) - (p/80)*(H-PAD-20);
+    let html = '';
+    html += `<line x1="${PAD}" y1="${H-PAD}" x2="${W-20}" y2="${H-PAD}" stroke="#8FA69B" opacity="0.3"/>`;
+    html += `<line x1="${PAD}" y1="20" x2="${PAD}" y2="${H-PAD}" stroke="#8FA69B" opacity="0.3"/>`;
+    html += `<path d="M${x(0)},${y(80)} L${x(10)},${y(0)}" fill="none" stroke="#00E0A0" stroke-width="2.5"/>`;
+    html += `<circle cx="${x(0)}" cy="${y(80)}" r="4" fill="#FF7A45"/>`;
+    html += `<circle cx="${x(2)}" cy="${y(64)}" r="4" fill="#FF7A45"/>`;
+    html += `<circle cx="${x(5)}" cy="${y(40)}" r="4" fill="#FF7A45"/>`;
+    html += `<text x="${x(0)+6}" y="${y(80)-8}" font-family="JetBrains Mono" font-size="10" fill="#F2F0E8">80%, same block</text>`;
+    html += `<text x="${x(2)+6}" y="${y(64)-8}" font-family="JetBrains Mono" font-size="10" fill="#F2F0E8">64%, live proof</text>`;
+    html += `<text x="${x(5)+6}" y="${y(40)-8}" font-family="JetBrains Mono" font-size="10" fill="#F2F0E8">40%, exact half</text>`;
+    html += `<text x="${PAD}" y="${H-15}" font-family="JetBrains Mono" font-size="10" fill="#8FA69B">blocks held →</text>`;
+    svg.innerHTML = html;
+  }
+
+  function angleToPoint(angleDeg, r) {
+    const rad = angleDeg * Math.PI / 180;
+    return { x: 200 + r * Math.cos(rad), y: 220 - r * Math.sin(rad) };
+  }
+  function animateGauge() {
+    const needle = document.getElementById('needle');
+    const gaugeVal = document.getElementById('gaugeVal');
+    if (!needle) return;
+    let angle = 180; // resting, far left (safe)
+    const targetAngle = 25; // swings toward alarm zone briefly
+    const restAngle = 165; // settles back near-safe (matches 0.06 combined score)
+    let phase = 0; let t = 0;
+    function step() {
+      t += 0.02;
+      let a;
+      if (phase === 0) {
+        a = 180 - (180-targetAngle) * Math.min(t,1);
+        if (t >= 1) { phase = 1; t = 0; }
+      } else if (phase === 1) {
+        a = targetAngle + (restAngle-targetAngle) * Math.min(t*0.6,1);
+        if (t*0.6 >= 1) { phase = 2; }
+      } else { a = restAngle; }
+      const p = angleToPoint(a, 120);
+      needle.setAttribute('x2', p.x); needle.setAttribute('y2', p.y);
+      const color = a < 80 ? '#FF7A45' : a < 130 ? '#F2C94C' : '#00E0A0';
+      gaugeVal.style.color = color;
+      if (phase < 2) requestAnimationFrame(step);
+    }
+    step();
+  }
+
+  runHeroAnimation();
+  drawDecayChart();
+  animateGauge();
+
+  // scroll reveal
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach(e => { if (e.isIntersecting) e.target.classList.add('in'); });
+  }, { threshold: 0.1 });
+  document.querySelectorAll('.reveal').forEach(el => observer.observe(el));
+
+  const connectBtn = document.getElementById('connectBtn');
+  const walletStatus = document.getElementById('walletStatus');
+  const walletBanner = document.getElementById('walletBanner');
+  const amountInEl = document.getElementById('amountIn');
+  const amountOutEl = document.getElementById('amountOut');
+  const feeReadoutEl = document.getElementById('feeReadout');
+  let walletConnected = false;
+
+  // Real, verified addresses and pool parameters - matches the exact
+  // pool this whole project has been proven against.
+  const SWAP_ROUTER = '0xC14c50A1016a9C3143Eb566bbc31618Ea247FEB1';
+  const HOOK = '0xC321e31f42c9630Cdc54bcd304Cbb70B8B1769C5';
+  const DEMO_TOKEN = '0x11aFe39b01189774a5D11f041BB55dfc888098B0';
+  const POOL_KEY = ['0x0000000000000000000000000000000000000000', DEMO_TOKEN, 8388608, 60, HOOK];
+  const MIN_SQRT_PRICE_PLUS_ONE = 4295128740n;
+  const SEPOLIA_CHAIN_ID = '0xaa36a7'; // 11155111
+
+  const SWAP_ROUTER_ABI = [
+    'function swap((address,address,uint24,int24,address) key, (bool,int256,uint160) params, (bool,bool) testSettings, bytes hookData) external payable returns (int256)'
+  ];
+  // Real PoolManager Swap event - matches the exact trace we verified live.
+  const SWAP_EVENT_ABI = ['event Swap(bytes32 indexed id, address indexed sender, int128 amount0, int128 amount1, uint160 sqrtPriceX96, uint128 liquidity, int24 tick, uint24 fee)'];
+
+  async function ensureSepolia() {
+    const chainId = await window.ethereum.request({ method: 'eth_chainId' });
+    if (chainId !== SEPOLIA_CHAIN_ID) {
+      try {
+        await window.ethereum.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: SEPOLIA_CHAIN_ID }] });
+      } catch (e) {
+        throw new Error('Please switch your wallet to the Sepolia network to swap.');
+      }
+    }
+  }
+
+  async function executeRealSwap() {
+    const amountText = amountInEl.value.trim();
+    const amountFloat = parseFloat(amountText);
+    if (!amountFloat || amountFloat <= 0) {
+      walletBanner.style.display = 'block';
+      walletBanner.style.borderLeftColor = 'var(--alarm)';
+      walletBanner.innerHTML = 'Enter a real, positive ETH amount to swap.';
+      return;
+    }
+
+    walletBanner.style.display = 'block';
+    walletBanner.style.borderLeftColor = 'var(--safe)';
+    walletBanner.innerHTML = 'Preparing a real transaction — check your wallet for the confirmation popup...';
+    connectBtn.disabled = true;
+
+    try {
+      await ensureSepolia();
+      const provider = new ethers.BrowserProvider(window.ethereum);
+      const signer = await provider.getSigner();
+      const router = new ethers.Contract(SWAP_ROUTER, SWAP_ROUTER_ABI, signer);
+
+      const amountInWei = ethers.parseEther(amountText);
+      const swapParams = [true, -amountInWei, MIN_SQRT_PRICE_PLUS_ONE]; // zeroForOne: ETH -> DEMO, exact input
+      const testSettings = [false, false];
+
+      const tx = await router.swap(POOL_KEY, swapParams, testSettings, '0x', { value: amountInWei });
+      walletBanner.innerHTML = `Transaction submitted: <a href="https://sepolia.etherscan.io/tx/${tx.hash}" target="_blank" style="color:var(--safe);">${tx.hash.slice(0,10)}…</a> — waiting for confirmation...`;
+
+      const receipt = await tx.wait();
+
+      // Decode the real Swap event from the real PoolManager logs in
+      // this receipt, rather than guessing the output amount.
+      const iface = new ethers.Interface(SWAP_EVENT_ABI);
+      let decoded = null;
+      for (const log of receipt.logs) {
+        try {
+          const parsed = iface.parseLog(log);
+          if (parsed && parsed.name === 'Swap') { decoded = parsed; break; }
+        } catch (e) { /* not this event, skip */ }
+      }
+
+      if (decoded) {
+        const amountOutReal = ethers.formatUnits(decoded.args.amount1, 18);
+        const feeReal = Number(decoded.args.fee) / 10000; // bps-like scale used by this hook
+        amountOutEl.value = parseFloat(amountOutReal).toFixed(6);
+        feeReadoutEl.textContent = feeReal.toFixed(2) + '%';
+        walletBanner.style.borderLeftColor = 'var(--safe)';
+        walletBanner.innerHTML = `Real swap confirmed in block ${receipt.blockNumber}. <a href="https://sepolia.etherscan.io/tx/${tx.hash}" target="_blank" style="color:var(--safe);">View on Etherscan</a>.`;
+      } else {
+        walletBanner.innerHTML = `Transaction confirmed in block ${receipt.blockNumber}, but the Swap event wasn't found in the logs to decode automatically. <a href="https://sepolia.etherscan.io/tx/${tx.hash}" target="_blank" style="color:var(--safe);">Check it directly on Etherscan</a>.`;
+      }
+    } catch (err) {
+      walletBanner.style.borderLeftColor = 'var(--alarm)';
+      const msg = err?.reason || err?.shortMessage || err?.message || 'The transaction failed or was rejected.';
+      walletBanner.innerHTML = 'Real error: ' + msg;
+    } finally {
+      connectBtn.disabled = false;
+    }
+  }
+
+  connectBtn?.addEventListener('click', async () => {
+    if (walletConnected) {
+      await executeRealSwap();
+      return;
+    }
+    if (!window.ethereum) {
+      walletStatus.textContent = 'no wallet found';
+      walletBanner.style.display = 'block';
+      walletBanner.style.borderLeftColor = 'var(--alarm)';
+      walletBanner.innerHTML = 'No browser wallet detected. Install <a href="https://metamask.io/download/" target="_blank" style="color:var(--safe);">MetaMask</a> (or another injected wallet), then reload this page.';
+      return;
+    }
+    walletBanner.style.display = 'block';
+    walletBanner.style.borderLeftColor = 'var(--safe)';
+    walletBanner.innerHTML = 'Requesting connection — check your wallet extension for a popup...';
+    try {
+      const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+      walletStatus.textContent = accounts[0].slice(0,6) + '…' + accounts[0].slice(-4);
+      connectBtn.textContent = 'Swap';
+      walletConnected = true;
+      walletBanner.innerHTML = 'Connected: ' + accounts[0] + '. Make sure your wallet network is set to <b>Sepolia</b>, then click Swap to send a real transaction.';
+    } catch (e) {
+      console.error('Real wallet connection error:', e);
+      walletBanner.style.borderLeftColor = 'var(--alarm)';
+      const realCode = e?.code !== undefined ? ' (code ' + e.code + ')' : '';
+      const realMsg = e?.message || String(e);
+      walletBanner.innerHTML = 'Real error' + realCode + ': ' + realMsg + '<br><span style="font-size:11px;">If you have multiple wallet extensions installed, they may be conflicting — try disabling all but one and reload. Full error also logged to the browser console (F12).</span>';
+    }
+  });
+</script>
+</body>
+</html>

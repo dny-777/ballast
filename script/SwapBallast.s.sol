@@ -41,7 +41,7 @@ contract SwapBallast is Script {
         address deployer = vm.addr(deployerPrivateKey);
 
         IPoolManager manager = IPoolManager(POOL_MANAGER);
-        BallastHook hook = BallastHook(BALLAST_HOOK);
+        BallastHook hook = BallastHook(payable(BALLAST_HOOK));
 
         PoolKey memory key = PoolKey({
             currency0: CurrencyLibrary.ADDRESS_ZERO,

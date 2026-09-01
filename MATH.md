@@ -6,6 +6,48 @@ formula against its own edge cases, and fixed, with real before/after
 numbers at every step. Nothing here is theoretical; every number is
 reproducible directly from this repository's test suite.
 
+## Theoretical grounding: this isn't just a heuristic
+
+Before the formulas: it's worth being precise about where this
+mechanism sits relative to real academic work on AMM design, and
+honest about what we are and aren't claiming.
+
+**Loss-versus-rebalancing (LVR)** — introduced by Milionis, Moallemi,
+Roughgarden, and Zhang — is the standard, rigorous way researchers
+quantify the cost LPs bear when arbitrageurs correct a pool's price
+after it drifts from the true, external market price. It's the same
+academic foundation other serious UHI projects have built on (e.g.
+Lambda's funding-rate hedge, which uses the related σ²/8 LVR-rate
+identity for a *different*, hedging-based mitigation strategy).
+
+The literature identifies **two recognized families of LVR
+mitigation**: reducing the mispricing itself (better, faster oracles),
+and *redistributing* the value arbitrageurs would otherwise extract —
+which itself splits into two approaches: hedging the LP's exposure
+directly (Lambda's approach), or **a dynamic fee that "imposes price
+discrimination on informed and uninformed order flow based on pattern
+recognition"** — a direct, real description of exactly what Signal 1
+and Signal 2 do.
+
+A recent formal model (*"Optimal Dynamic Fees for Automated Market
+Makers,"* 2026) goes further, describing a fee term that specifically
+**"penalizes deviations between the marginal pool price and the
+centralised reference price, incentivizing the AMM to choose fees that
+push [the price] toward the oracle-implied state"** — this is Signal 1,
+precisely, independently formalized in the same tradition.
+
+**What we're claiming, and what we're not:** we did not design Signal 1
+or Signal 2 by starting from this literature — they were built and
+refined through iteration and testing, described throughout this
+document. What we're claiming is narrower and, we think, more
+meaningful: the mechanism that emerged from that process turns out to
+correspond to a real, independently-recognized LVR-mitigation strategy
+in the formal literature studying this exact problem — not a
+coincidence we're forcing, but a genuine convergence worth stating
+plainly. Ballast's real advantage within this family: fee-based
+correction happens same-block, at the moment mispricing occurs, rather
+than hedging its cost after the fact.
+
 ## The two signals, precisely
 
 **Signal 1 — external deviation** (comparing the pool against a trusted
@@ -114,3 +156,50 @@ against what the design should produce, and treating any gap as worth
 investigating rather than explaining away. That process caught two
 separate, real, previously-undetected issues in sequence, each verified
 with exact numbers before and after.
+
+## JIT liquidity defense: the decay math, verified twice — locally and live
+
+Ballast's fourth defense (see the README for why JIT liquidity is a
+genuinely distinct MEV vector Signal 1/Signal 2 cannot see at all)
+uses a simple, deliberately linear decay, chosen specifically to avoid
+a hard "cliff" a bot could dodge by waiting one extra block:
+
+```
+blocksHeld = block.number − liquidityAddedAtBlock[positionKey]
+penaltyBps = JIT_MAX_PENALTY_BPS × (JIT_DECAY_BLOCKS − blocksHeld) / JIT_DECAY_BLOCKS
+```
+
+With `JIT_MAX_PENALTY_BPS = 8000` (80%) and `JIT_DECAY_BLOCKS = 10`:
+same-block removal is charged the full 80%, decaying smoothly to 0% by
+the 10th block held.
+
+**Verified exactly, not just asserted, twice over:**
+
+1. **Locally**, a real fuzzed test confirmed the decay is mathematically
+   exact: a position removed at exactly the halfway point (5 of 10
+   blocks) produced a penalty of precisely half the same-block value —
+   `11,999,999,999,999,999` wei versus `23,999,999,999,999,999` wei,
+   an exact 2:1 ratio, not an approximation.
+2. **Live, on Sepolia**, a real position was added, traded against, and
+   removed 2 blocks later (`10606972` → `10606995` on one deployment;
+   `11607201` → `11607203`, just 2 blocks apart, on the final one). The
+   real, on-chain `JitPenaltyApplied` event fired with a genuine,
+   nonzero penalty (`2,399,999,999,999` wei), confirmed directly by
+   querying `pendingReserve0` afterward and finding that exact same
+   number sitting there, unreleased (small enough not to cross
+   `MIN_DONATE_THRESHOLD`) — real, persistent, on-chain proof, not a
+   transient value that resolved before it could be checked.
+
+## A real bug this defense's own live testing found, unrelated to the decay math itself
+
+The first live attempt at this exact demonstration reverted entirely —
+not because the decay math was wrong, but because `BallastHook` had no
+`receive()` function at all, and `poolManager.take()` could not
+deliver native ETH to the contract during the skim. Every local test
+in this project used two ERC20 tokens, never native ETH, so this was
+invisible to all 100+ local tests and only surfaced via a real, live
+attempt against a real `currency0 = ETH` pool. Fixed with a minimal
+`receive() external payable {}`, then confirmed with three new,
+dedicated tests (`test/NativeEth.t.sol`) exercising native ETH through
+every skim path this contract has, and reproduced successfully live
+immediately after.
