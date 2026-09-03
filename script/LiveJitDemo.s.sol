@@ -73,11 +73,11 @@ contract LiveJitDemo is Script {
             .modifyLiquidity(
                 key,
                 ModifyLiquidityParams({
-                tickLower: TickMath.minUsableTick(60),
-                tickUpper: TickMath.maxUsableTick(60),
-                liquidityDelta: -0.02 ether,
-                salt: bytes32(uint256(2))
-            }),
+                    tickLower: TickMath.minUsableTick(60),
+                    tickUpper: TickMath.maxUsableTick(60),
+                    liquidityDelta: -0.02 ether,
+                    salt: bytes32(uint256(2))
+                }),
                 ""
             );
         console.log("Step 3: liquidity removed. Check BallastHook events for JitPenaltyApplied.");
