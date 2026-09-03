@@ -17,7 +17,7 @@ A Uniswap v4 hook that prices toxic order flow directionally, taxes just-in-time
 
 > **Fill in before submitting:** demo video link and live app hosting URL below — both still placeholders.
 
-📺 Demo video: `TODO — add your video link here` · 🌐 Live app: `TODO — add your hosting URL here`
+📺 Demo video: https://youtu.be/bHIB0d3eQTA?si=tppKba2STY6qMQ7R · 🌐 Live app: https://ballast-brown.vercel.app/
 
 ---
 
