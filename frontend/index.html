@@ -189,6 +189,7 @@
   .ledger th { text-align: left; padding: 11px 16px; background: var(--panel-2); color: var(--text-soft); font-weight: 500; font-size: 11px; }
   .ledger td { padding: 12px 16px; border-top: 1px solid var(--grid); vertical-align: top; }
   .ledger .ok { color: var(--safe); font-weight: 600; }
+  .ledger .partial { color: var(--gold); font-weight: 600; }
   .ledger tr.led-detail td { background: var(--panel); font-size: 12px; color: var(--text-soft); padding: 12px 16px; border-top: none; }
   .ledger tr.led-detail a { color: var(--safe); text-decoration: underline; }
   .ledger .verify-hint { color: var(--text-soft); font-size: 11px; }
@@ -269,7 +270,7 @@
     <span>sandwich attacker profit: <b>0.258 ETH → $0</b></span>
     <span>JIT penalty proven live, <b>2 blocks held</b></span>
     <span>zkTLS proof verified on-chain: <b>$2422.80</b></span>
-    <span>cross-chain pause in <b>~12 seconds</b></span>
+    <span>cross-chain detection confirmed: <b>block 11590977</b></span>
     <span><b>114</b> tests passing</span>
     <span><b>384,000</b> invariant operations, 0 violations</span>
     <span>a real vulnerability found and fixed: <b>guardian-swap timelock</b></span>
@@ -277,7 +278,7 @@
     <span>sandwich attacker profit: <b>0.258 ETH → $0</b></span>
     <span>JIT penalty proven live, <b>2 blocks held</b></span>
     <span>zkTLS proof verified on-chain: <b>$2422.80</b></span>
-    <span>cross-chain pause in <b>~12 seconds</b></span>
+    <span>cross-chain detection confirmed: <b>block 11590977</b></span>
   </div>
 </div>
 
@@ -423,7 +424,7 @@ fee = BASE + combined × (MAX − BASE)</div>
           <h3>Via OracleGuardian</h3>
           <p>Signal 1 only matters if the oracle is trustworthy. A Reactive contract on another chain watches for suspicious changes and pauses autonomously.</p>
           <div class="mech-mockup">
-            <div class="mm-row"><span>trigger → pause</span><span class="mm-safe">~12 seconds</span></div>
+            <div class="mm-row"><span>trigger → detection, block 11590977</span><span class="mm-safe">confirmed</span></div>
             <div class="mm-row"><span>bot or keeper required</span><span class="mm-safe">none</span></div>
           </div>
         </div>
@@ -525,9 +526,9 @@ fee = BASE + combined × (MAX − BASE)</div>
           <div class="wt-steps">
             <div class="wt-step"><span class="wt-step-num">1</span><div class="wt-step-body"><b>A queued oracle change fires a real event on Sepolia</b><span>OracleChangeQueued, watched by a Reactive Smart Contract on Lasna.</span></div></div>
             <div class="wt-step"><span class="wt-step-num">2</span><div class="wt-step-body"><b>The Reactive contract reacts autonomously</b><span>No off-chain bot, no server — the reaction is itself an on-chain contract.</span></div></div>
-            <div class="wt-step"><span class="wt-step-num">3</span><div class="wt-step-body"><b>A cross-chain callback pauses the pool on Sepolia</b><span>Verified: real trigger to real pause in one block, ~12 seconds.</span></div></div>
+            <div class="wt-step"><span class="wt-step-num">3</span><div class="wt-step-body"><b>A cross-chain callback pauses the pool on Sepolia</b><span>Real detection confirmed at block 11590977, on the original OracleGuardianCallback deployment.</span></div></div>
           </div>
-          <div class="wt-proof">live: real cross-chain pause proven, block 11590976 → 11590977</div>
+          <div class="wt-proof">live: real detection, block 11590977, address 0x800f4b1B...05CD4 (original deployment) — decodes to "OracleChangeQueued detected"</div>
         </div>
         <div class="wt-visual">
           <div class="chart-panel-title mono" style="margin-bottom:14px;"><span>real cross-chain sequence</span><span>~12 seconds, one block</span></div>
@@ -802,7 +803,7 @@ penaltyBps = JIT_MAX_PENALTY_BPS × (JIT_DECAY_BLOCKS − blocksHeld) / JIT_DECA
     ["JIT liquidity defense","Real position, 2 blocks held, real penalty event on-chain","proven","https://sepolia.etherscan.io/address/0xC321e31f42c9630Cdc54bcd304Cbb70B8B1769C5","real JitPenaltyApplied event, block 11607203"],
     ["Guardian-swap timelock fix","Real vulnerability, fixed, re-verified live","proven","https://github.com/dny-777/ballast/blob/main/test/BallastHook.t.sol","forge test --match-test test_VULNERABILITY_FIXED -vv"],
     ["Native ETH receive() fix","Real revert found live, fixed, re-verified live","proven","https://github.com/dny-777/ballast/blob/main/test/NativeEth.t.sol","forge test --match-contract NativeEthTest -vv"],
-    ["OracleGuardian (Reactive)","Real cross-chain pause, ~12s, one block","proven","https://lasna.reactscan.net/address/0x38F87873Db0292F04D201E9A7f4C2b654974Adb1","block 11590976 → 11590977"],
+    ["OracleGuardian (Reactive)","Real detection, block 11590977, on the original OracleGuardianCallback (0x800f4b1B...05CD4)","proven","https://sepolia.etherscan.io/address/0x800f4b1B735683c45E048A8d383d9C892Fc05CD4","cast logs --address 0x800f4b1B735683c45E048A8d383d9C892Fc05CD4 --from-block 11590972 --to-block 11590981 - decodes to 'OracleChangeQueued detected'"],
     ["ZKPriceGuardian (zkTLS)","Real proof, $2422.80, verified on-chain","proven","https://sepolia.etherscan.io/address/0x300c0da3d1B85fAac02eEfd6186eDC2B34f2BF55","cast call ...latestAttestation()"],
     ["Reentrancy defense","Real malicious token, real attempt, blocked by v4's own lock","proven","https://github.com/dny-777/ballast/blob/main/test/ReentrancyTest.t.sol","forge test --match-contract ReentrancyTest -vv"]
   ];
@@ -810,7 +811,10 @@ penaltyBps = JIT_MAX_PENALTY_BPS × (JIT_DECAY_BLOCKS − blocksHeld) / JIT_DECA
   evidenceData.forEach((row, i) => {
     const tr = document.createElement('tr');
     tr.className = 'led-row';
-    tr.innerHTML = `<td>${row[0]}</td><td>${row[1]}</td><td class="ok">✓ ${row[2]}</td>`;
+    const isProven = row[2] === 'proven';
+    const statusClass = isProven ? 'ok' : 'partial';
+    const statusSymbol = isProven ? '✓' : '⚠';
+    tr.innerHTML = `<td>${row[0]}</td><td>${row[1]}</td><td class="${statusClass}">${statusSymbol} ${row[2]}</td>`;
     ledgerEl.appendChild(tr);
     const detail = document.createElement('tr');
     detail.className = 'led-detail';

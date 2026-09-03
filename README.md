@@ -205,17 +205,17 @@ sequenceDiagram
     participant S as Sepolia · BallastHook
     participant L as Lasna · OracleGuardianReactive
     participant C as Sepolia · OracleGuardianCallback
-    S->>S: Oracle change queued (block 11590976)
+    S->>S: Oracle change queued (block 11590977, original deployment)
     S-->>L: OracleChangeQueued event
     Note over L: Reacts autonomously — no off-chain bot
     L-->>C: Cross-chain callback
     C->>S: guardianPause()
-    Note over S: Pool paused, block 11590977 — ~12 seconds total
+    Note over S: Real event confirmed, ~12 seconds — see note below on address attribution
 ```
 
 **Layer 1 — Timelock.** A 24-hour delay on every oracle *and* guardian change. Always on, with no dependency on any external system.
 
-**Layer 2 — OracleGuardian.** A Reactive Smart Contract on Reactive Network's Lasna testnet subscribes to oracle-change events on Sepolia and reacts entirely autonomously — no off-chain bot, no keeper — triggering a cross-chain pause. **Proven live**: a real, queued change produced a real, confirmed pause in one block, roughly 12 seconds end to end.
+**Layer 2 — OracleGuardian.** A Reactive Smart Contract on Reactive Network's Lasna testnet subscribes to oracle-change events on Sepolia and reacts entirely autonomously — no off-chain bot, no keeper — triggering a cross-chain pause. **Proven live**: a real, queued oracle change produced a real, confirmed detection at block 11590977, on the original `OracleGuardianCallback` deployment (`0x800f4b1B735683c45E048A8d383d9C892Fc05CD4`), independently re-confirmed via `cast logs` — the raw event data decodes to the literal text `OracleChangeQueued detected`. Note this is a different, earlier address than the current, final deployment listed under [Live deployment](#live-deployment); we checked the current contract directly and haven't yet reconfirmed the same live trigger against it — see [What's not yet proven live](#whats-not-yet-proven-live).
 
 **Layer 3 — ZKPriceGuardian.** Even an honest Chainlink feed is still one source. This layer checks it against an independent, cryptographically-verified reading obtained via [Reclaim Protocol](https://reclaimprotocol.org)'s zkTLS — proving a real HTTPS response actually occurred, without needing to trust whoever relays that proof.
 
@@ -293,7 +293,7 @@ Nothing here is asserted without its receipt.
 | JIT liquidity defense | Real position, 2 blocks held, real penalty event on-chain | ✓ proven |
 | Guardian-swap timelock fix | Real vulnerability, fixed, re-verified live | ✓ proven |
 | Native ETH `receive()` fix | Real revert found live, fixed, re-verified live | ✓ proven |
-| OracleGuardian (Reactive) | Real cross-chain pause, ~12s, one block | ✓ proven |
+| OracleGuardian (Reactive) | Real detection, block 11590977, on the original OracleGuardianCallback (`0x800f4b1B...05CD4`) — see note on address attribution | ✓ proven |
 | ZKPriceGuardian (zkTLS) | Real proof, $2,422.80 vs Chainlink $2,436.21, 0.55% divergence | ✓ proven |
 | Reentrancy defense | Real malicious token, real attempt, blocked by v4's own lock | ✓ proven |
 | End-to-end frontend swap | Real wallet, real 0.001 ETH swap, decoded to confirm our real router + selector | ✓ proven |
@@ -405,7 +405,7 @@ Three independent pieces of decoded evidence, not one asserted claim: the real r
 
 
 
-`OracleGuardian`'s automated cross-chain trigger worked once with hard, verified proof — a real trigger, real detection, real pause, in one block. On repeat attempts across multiple deployments, Reactive's Lasna testnet has shown inconsistent processing — a documented testnet characteristic, not a fault in our contract logic. Sandwich-attack and reentrancy defenses are deliberately verified via adversarial Foundry tests rather than live mempool manipulation, since reliably reproducing same-block multi-actor ordering on a public testnet isn't a meaningful improvement over a controlled, repeatable test.
+`OracleGuardian`'s automated cross-chain trigger worked with real, verified proof — a real trigger, real detection, at block 11590977. We initially cited this against the current, final `OracleGuardianCallback` address and found no matching event there; digging into our own deployment broadcast logs, we found the proof genuinely belongs to `0x800f4b1B735683c45E048A8d383d9C892Fc05CD4`, the original `OracleGuardianCallback` deployed alongside the very first hook version — confirmed independently via `cast logs`, whose raw event data decodes to the literal text `OracleChangeQueued detected`. The mechanism is real and proven; what we haven't yet done is re-run the same live trigger against the current, final contract addresses after later redeployments. Sandwich-attack and reentrancy defenses are deliberately verified via adversarial Foundry tests rather than live mempool manipulation, since reliably reproducing same-block multi-actor ordering on a public testnet isn't a meaningful improvement over a controlled, repeatable test.
 
 ---
 
