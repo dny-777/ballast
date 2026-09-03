@@ -15,8 +15,8 @@ A Uniswap v4 hook that prices toxic order flow directionally, taxes just-in-time
 
 > **Status: unaudited hookathon submission (UHI10).** Every mechanism below is either proven live on Sepolia/Reactive Lasna with a real, checkable transaction, or explicitly disclosed as local-test-only with the honest reason why. Nothing here is asserted without saying which kind of evidence backs it.
 
-📺 Demo video: https://youtu.be/bHIB0d3eQTA?si=tppKba2STY6qMQ7R · 🌐 Live app: https://ballast-brown.vercel.app/
-
+📺 Demo video: https://youtu.be/bHIB0d3eQTA?si=tppKba2STY6qMQ7R · 🌐 Live app: https://ballast-brown.vercel.app/ 
+· 📊 Pitch deck: https://drive.google.com/drive/folders/1afVo8h9_O4rpR33kbz-JZsKeDJGHDaxM?usp=drive_link
 ---
 
 ## The 30-second version
