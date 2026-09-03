@@ -71,11 +71,7 @@ contract DeployBallastV2 is Script {
         Currency currency1 = Currency.wrap(EXISTING_DEMO_TOKEN);
 
         PoolKey memory key = PoolKey({
-            currency0: currency0,
-            currency1: currency1,
-            fee: LPFeeLibrary.DYNAMIC_FEE_FLAG,
-            tickSpacing: 60,
-            hooks: hook
+            currency0: currency0, currency1: currency1, fee: LPFeeLibrary.DYNAMIC_FEE_FLAG, tickSpacing: 60, hooks: hook
         });
 
         uint160 sqrtPriceX96 = 79228162514264337593543950336; // 1:1 starting price

@@ -36,9 +36,9 @@ contract BallastHookTest is Test, Deployers {
         // Foundry cheat code for fast local deployment during tests; a real
         // deployment needs the actual HookMiner (tracked separately).
         uint160 flags = uint160(
-            Hooks.BEFORE_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG
-                | Hooks.BEFORE_ADD_LIQUIDITY_FLAG | Hooks.AFTER_REMOVE_LIQUIDITY_FLAG
-                | Hooks.AFTER_REMOVE_LIQUIDITY_RETURNS_DELTA_FLAG
+            Hooks.BEFORE_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG
+                | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG | Hooks.BEFORE_ADD_LIQUIDITY_FLAG
+                | Hooks.AFTER_REMOVE_LIQUIDITY_FLAG | Hooks.AFTER_REMOVE_LIQUIDITY_RETURNS_DELTA_FLAG
         );
         address hookAddress = address(flags);
         deployCodeTo("BallastHook.sol:BallastHook", abi.encode(manager), hookAddress);
@@ -79,9 +79,7 @@ contract BallastHookTest is Test, Deployers {
 
     function test_previewFee_atOraclePrice_returnsBaseFee() public view {
         SwapParams memory params = SwapParams({
-            zeroForOne: true,
-            amountSpecified: -0.001 ether,
-            sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+            zeroForOne: true, amountSpecified: -0.001 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
         });
 
         uint24 fee = hook.previewFee(key, params);
@@ -101,11 +99,8 @@ contract BallastHookTest is Test, Deployers {
         // Move the pool price above the oracle price by doing a real swap
         // that buys currency0 with currency1 (zeroForOne = false pushes
         // pool price up, per Workshop 3's Token0-price-increases convention).
-        SwapParams memory pushUpParams = SwapParams({
-            zeroForOne: false,
-            amountSpecified: -1 ether,
-            sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
-        });
+        SwapParams memory pushUpParams =
+            SwapParams({zeroForOne: false, amountSpecified: -1 ether, sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1});
         swapRouter.swap(key, pushUpParams, PoolSwapTestSettings(), ZERO_BYTES);
 
         // Advance to a new block so Signal 1's top-of-block snapshot
@@ -120,9 +115,7 @@ contract BallastHookTest is Test, Deployers {
         // further zeroForOne = false swap continues pushing price up,
         // i.e. widens the existing gap -> should be flagged toxic.
         SwapParams memory continueUpParams = SwapParams({
-            zeroForOne: false,
-            amountSpecified: -0.001 ether,
-            sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
+            zeroForOne: false, amountSpecified: -0.001 ether, sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
         });
 
         uint24 fee = hook.previewFee(key, continueUpParams);
@@ -138,11 +131,8 @@ contract BallastHookTest is Test, Deployers {
 
     function test_previewFee_correctiveDirection_chargesDiscount() public {
         // Same setup: push pool price above oracle first.
-        SwapParams memory pushUpParams = SwapParams({
-            zeroForOne: false,
-            amountSpecified: -1 ether,
-            sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
-        });
+        SwapParams memory pushUpParams =
+            SwapParams({zeroForOne: false, amountSpecified: -1 ether, sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1});
         swapRouter.swap(key, pushUpParams, PoolSwapTestSettings(), ZERO_BYTES);
 
         // See comment in test_previewFee_toxicDirection_chargesSurcharge
@@ -153,9 +143,7 @@ contract BallastHookTest is Test, Deployers {
         // A zeroForOne = true swap now pushes price back DOWN, i.e. toward
         // the oracle price -> should be flagged corrective, not toxic.
         SwapParams memory correctiveParams = SwapParams({
-            zeroForOne: true,
-            amountSpecified: -0.001 ether,
-            sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+            zeroForOne: true, amountSpecified: -0.001 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
         });
 
         uint24 fee = hook.previewFee(key, correctiveParams);
@@ -179,9 +167,7 @@ contract BallastHookTest is Test, Deployers {
         oracle.setAnswerAndTimestamp(int256(1 * 10 ** 8), block.timestamp - 2 hours);
 
         SwapParams memory params = SwapParams({
-            zeroForOne: true,
-            amountSpecified: -0.001 ether,
-            sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+            zeroForOne: true, amountSpecified: -0.001 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
         });
 
         vm.expectRevert();
@@ -256,9 +242,9 @@ contract BallastHookTest is Test, Deployers {
         // the same permission flags) so this test doesn't collide with the
         // hook already attached to `key` in setUp().
         uint160 flags2 = uint160(
-            Hooks.BEFORE_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG
-                | Hooks.BEFORE_ADD_LIQUIDITY_FLAG | Hooks.AFTER_REMOVE_LIQUIDITY_FLAG
-                | Hooks.AFTER_REMOVE_LIQUIDITY_RETURNS_DELTA_FLAG
+            Hooks.BEFORE_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG
+                | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG | Hooks.BEFORE_ADD_LIQUIDITY_FLAG
+                | Hooks.AFTER_REMOVE_LIQUIDITY_FLAG | Hooks.AFTER_REMOVE_LIQUIDITY_RETURNS_DELTA_FLAG
         );
         // Offset into a high bit well above the flag region (flags occupy
         // only the lowest ~14 bits) so we get a distinct address without
@@ -267,8 +253,7 @@ contract BallastHookTest is Test, Deployers {
         deployCodeTo("BallastHook.sol:BallastHook", abi.encode(manager), hook2Address);
         BallastHook hook2 = BallastHook(payable(hook2Address));
 
-        (PoolKey memory decimalsKey,) =
-            initPool(d0, d1, hook2, LPFeeLibrary.DYNAMIC_FEE_FLAG, SQRT_PRICE_1_1);
+        (PoolKey memory decimalsKey,) = initPool(d0, d1, hook2, LPFeeLibrary.DYNAMIC_FEE_FLAG, SQRT_PRICE_1_1);
 
         modifyLiquidityRouter.modifyLiquidity(
             decimalsKey,
@@ -328,9 +313,7 @@ contract BallastHookTest is Test, Deployers {
         hook2.configurePool(decimalsKey, decimalsOracle, true, 0);
 
         SwapParams memory params = SwapParams({
-            zeroForOne: true,
-            amountSpecified: -0.001 ether,
-            sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+            zeroForOne: true, amountSpecified: -0.001 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
         });
 
         uint24 fee = hook2.previewFee(decimalsKey, params);
@@ -351,9 +334,7 @@ contract BallastHookTest is Test, Deployers {
 
     function test_previewFee_firstSwap_seedsBaseline_notFlaggedExcessive() public view {
         SwapParams memory params = SwapParams({
-            zeroForOne: true,
-            amountSpecified: -0.001 ether,
-            sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+            zeroForOne: true, amountSpecified: -0.001 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
         });
 
         // Before any real swap has executed via the router, there is no
@@ -375,9 +356,7 @@ contract BallastHookTest is Test, Deployers {
 
         // Establish a baseline with several small, consistent swaps.
         SwapParams memory smallParams = SwapParams({
-            zeroForOne: true,
-            amountSpecified: -0.05 ether,
-            sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+            zeroForOne: true, amountSpecified: -0.05 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
         });
         for (uint256 i = 0; i < 5; i++) {
             swapRouter.swap(key, smallParams, settings, ZERO_BYTES);
@@ -399,11 +378,8 @@ contract BallastHookTest is Test, Deployers {
         // here is attributable to Signal 2, proving it fires
         // independently of Signal 1.
 
-        SwapParams memory largeParams = SwapParams({
-            zeroForOne: true,
-            amountSpecified: -5 ether,
-            sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
-        });
+        SwapParams memory largeParams =
+            SwapParams({zeroForOne: true, amountSpecified: -5 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1});
 
         uint24 fee = hook.previewFee(key, largeParams);
 
@@ -421,9 +397,7 @@ contract BallastHookTest is Test, Deployers {
 
         // Establish a small baseline.
         SwapParams memory smallParams = SwapParams({
-            zeroForOne: true,
-            amountSpecified: -0.05 ether,
-            sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+            zeroForOne: true, amountSpecified: -0.05 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
         });
         for (uint256 i = 0; i < 5; i++) {
             swapRouter.swap(key, smallParams, settings, ZERO_BYTES);
@@ -432,18 +406,12 @@ contract BallastHookTest is Test, Deployers {
         // Push pool price far from the oracle (Signal 1 toxic) AND make
         // the next preview swap large relative to the baseline (Signal 2
         // excessive), simultaneously.
-        SwapParams memory pushParams = SwapParams({
-            zeroForOne: false,
-            amountSpecified: -10 ether,
-            sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
-        });
+        SwapParams memory pushParams =
+            SwapParams({zeroForOne: false, amountSpecified: -10 ether, sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1});
         swapRouter.swap(key, pushParams, settings, ZERO_BYTES);
 
-        SwapParams memory extremeParams = SwapParams({
-            zeroForOne: false,
-            amountSpecified: -10 ether,
-            sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
-        });
+        SwapParams memory extremeParams =
+            SwapParams({zeroForOne: false, amountSpecified: -10 ether, sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1});
 
         uint24 fee = hook.previewFee(key, extremeParams);
 
@@ -461,9 +429,7 @@ contract BallastHookTest is Test, Deployers {
         // First push the pool price away from the oracle (toxic direction),
         // and establish a baseline for Signal 2 with a few swaps.
         SwapParams memory params = SwapParams({
-            zeroForOne: true,
-            amountSpecified: -0.05 ether,
-            sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+            zeroForOne: true, amountSpecified: -0.05 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
         });
 
         uint256 reserve1Before = hook.pendingReserve1(key.toId());
@@ -492,11 +458,8 @@ contract BallastHookTest is Test, Deployers {
         // subsequent small swaps in the same direction are clearly toxic
         // (nonzero deviation), without themselves being large enough to
         // cross MIN_DONATE_THRESHOLD in a single swap.
-        SwapParams memory pushParams = SwapParams({
-            zeroForOne: true,
-            amountSpecified: -3 ether,
-            sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
-        });
+        SwapParams memory pushParams =
+            SwapParams({zeroForOne: true, amountSpecified: -3 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1});
         swapRouter.swap(key, pushParams, settings, ZERO_BYTES);
 
         // Advance to a new block so the top-of-block snapshot refreshes to
@@ -509,9 +472,7 @@ contract BallastHookTest is Test, Deployers {
         // accumulates gradually and observably across several swaps
         // before eventually crossing the threshold and auto-releasing.
         SwapParams memory smallToxicParams = SwapParams({
-            zeroForOne: true,
-            amountSpecified: -0.002 ether,
-            sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+            zeroForOne: true, amountSpecified: -0.002 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
         });
 
         bool sawNonzeroReserve = false;
@@ -548,15 +509,10 @@ contract BallastHookTest is Test, Deployers {
     function test_manyToxicSwaps_neverRevertsOrDesyncs() public {
         PoolSwapTest.TestSettings memory settings = PoolSwapTestSettings();
 
-        SwapParams memory toxicParams = SwapParams({
-            zeroForOne: true,
-            amountSpecified: -1 ether,
-            sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
-        });
+        SwapParams memory toxicParams =
+            SwapParams({zeroForOne: true, amountSpecified: -1 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1});
         SwapParams memory correctiveParams = SwapParams({
-            zeroForOne: false,
-            amountSpecified: -0.5 ether,
-            sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
+            zeroForOne: false, amountSpecified: -0.5 ether, sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
         });
 
         // Alternate directions to exercise both currencies' skim/reserve
@@ -588,11 +544,8 @@ contract BallastHookTest is Test, Deployers {
     // ─────────────────────────────────────────────────────────────────────
 
     function test_sameBlockPriceManipulation_doesNotTriggerSurcharge() public {
-        SwapParams memory pushUpParams = SwapParams({
-            zeroForOne: false,
-            amountSpecified: -1 ether,
-            sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
-        });
+        SwapParams memory pushUpParams =
+            SwapParams({zeroForOne: false, amountSpecified: -1 ether, sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1});
         swapRouter.swap(key, pushUpParams, PoolSwapTestSettings(), ZERO_BYTES);
 
         // Deliberately NOT rolling to a new block here — this is exactly
@@ -600,9 +553,7 @@ contract BallastHookTest is Test, Deployers {
         // then immediately try to benefit from (or be judged by) that
         // manipulated price within the same block.
         SwapParams memory continueUpParams = SwapParams({
-            zeroForOne: false,
-            amountSpecified: -0.001 ether,
-            sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
+            zeroForOne: false, amountSpecified: -0.001 ether, sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
         });
 
         uint24 fee = hook.previewFee(key, continueUpParams);
@@ -622,9 +573,7 @@ contract BallastHookTest is Test, Deployers {
 
     function test_gasBenchmark_singleSwapThroughBallast() public {
         SwapParams memory params = SwapParams({
-            zeroForOne: true,
-            amountSpecified: -0.01 ether,
-            sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+            zeroForOne: true, amountSpecified: -0.01 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
         });
 
         uint256 gasBefore = gasleft();
@@ -639,19 +588,14 @@ contract BallastHookTest is Test, Deployers {
         // measured swap actually exercises the skim + reserve-write path,
         // not just the read-only signal checks.
         SwapParams memory smallParams = SwapParams({
-            zeroForOne: true,
-            amountSpecified: -0.05 ether,
-            sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+            zeroForOne: true, amountSpecified: -0.05 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
         });
         for (uint256 i = 0; i < 3; i++) {
             swapRouter.swap(key, smallParams, PoolSwapTestSettings(), ZERO_BYTES);
         }
 
-        SwapParams memory largeParams = SwapParams({
-            zeroForOne: true,
-            amountSpecified: -3 ether,
-            sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
-        });
+        SwapParams memory largeParams =
+            SwapParams({zeroForOne: true, amountSpecified: -3 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1});
 
         uint256 gasBefore = gasleft();
         swapRouter.swap(key, largeParams, PoolSwapTestSettings(), ZERO_BYTES);
@@ -681,19 +625,14 @@ contract BallastHookTest is Test, Deployers {
         );
 
         SwapParams memory smallParams = SwapParams({
-            zeroForOne: true,
-            amountSpecified: -0.05 ether,
-            sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+            zeroForOne: true, amountSpecified: -0.05 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
         });
         for (uint256 i = 0; i < 3; i++) {
             swapRouter.swap(vanillaKey, smallParams, PoolSwapTestSettings(), ZERO_BYTES);
         }
 
-        SwapParams memory largeParams = SwapParams({
-            zeroForOne: true,
-            amountSpecified: -3 ether,
-            sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
-        });
+        SwapParams memory largeParams =
+            SwapParams({zeroForOne: true, amountSpecified: -3 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1});
 
         uint256 gasBefore = gasleft();
         swapRouter.swap(vanillaKey, largeParams, PoolSwapTestSettings(), ZERO_BYTES);
@@ -718,9 +657,7 @@ contract BallastHookTest is Test, Deployers {
         // The ORIGINAL oracle must still be active — the change is only
         // queued, not yet in effect.
         SwapParams memory params = SwapParams({
-            zeroForOne: true,
-            amountSpecified: -0.001 ether,
-            sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+            zeroForOne: true, amountSpecified: -0.001 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
         });
         uint24 fee = hook.previewFee(key, params);
         assertEq(fee, hook.BASE_FEE(), "Old oracle (parity with pool) should still be active");
@@ -772,9 +709,7 @@ contract BallastHookTest is Test, Deployers {
         // checking previewFee behavior actually reflects the new price,
         // not just that internal state changed.
         SwapParams memory params = SwapParams({
-            zeroForOne: true,
-            amountSpecified: -0.001 ether,
-            sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+            zeroForOne: true, amountSpecified: -0.001 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
         });
         uint24 fee = hook.previewFee(key, params);
         // New oracle reports 2.0 vs. pool's 1.0 — a large deviation should
@@ -1014,9 +949,11 @@ contract BallastHookTest is Test, Deployers {
     // across hundreds of randomized runs per `forge test` invocation.
     // ─────────────────────────────────────────────────────────────────────
 
-    function testFuzz_previewFee_alwaysWithinDesignedBounds(int256 oraclePriceRaw, int256 swapAmountRaw, bool zeroForOne)
-        public
-    {
+    function testFuzz_previewFee_alwaysWithinDesignedBounds(
+        int256 oraclePriceRaw,
+        int256 swapAmountRaw,
+        bool zeroForOne
+    ) public {
         // Bound to a wide but sane range — avoids the known, separately-
         // documented extreme-sqrtPrice overflow edge case (see
         // _rawSqrtPriceToDecimalsCorrectedX18's NatSpec) rather than
@@ -1099,11 +1036,8 @@ contract BallastHookTest is Test, Deployers {
         // Push pool price toxic-ward first (zeroForOne=false, exact input,
         // already-covered branch) and advance a block per our snapshot
         // defense.
-        SwapParams memory pushParams = SwapParams({
-            zeroForOne: false,
-            amountSpecified: -1 ether,
-            sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
-        });
+        SwapParams memory pushParams =
+            SwapParams({zeroForOne: false, amountSpecified: -1 ether, sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1});
         swapRouter.swap(key, pushParams, settings, ZERO_BYTES);
         vm.roll(block.number + 1);
 
@@ -1141,20 +1075,15 @@ contract BallastHookTest is Test, Deployers {
         // pool price ABOVE oracle already (established via the push
         // below), then a further zeroForOne=false swap continues pushing
         // up = toxic, per our Signal 1 direction logic.
-        SwapParams memory pushParams = SwapParams({
-            zeroForOne: false,
-            amountSpecified: -1 ether,
-            sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
-        });
+        SwapParams memory pushParams =
+            SwapParams({zeroForOne: false, amountSpecified: -1 ether, sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1});
         swapRouter.swap(key, pushParams, settings, ZERO_BYTES);
         vm.roll(block.number + 1);
 
         uint256 reserve0Before = hook.pendingReserve0(key.toId());
 
         SwapParams memory toxicOneForZero = SwapParams({
-            zeroForOne: false,
-            amountSpecified: -0.5 ether,
-            sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
+            zeroForOne: false, amountSpecified: -0.5 ether, sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
         });
         swapRouter.swap(key, toxicOneForZero, settings, ZERO_BYTES);
 
@@ -1201,19 +1130,14 @@ contract BallastHookTest is Test, Deployers {
 
         // Run the IDENTICAL sequence of toxic-direction swaps against
         // both pools.
-        SwapParams memory toxicParams = SwapParams({
-            zeroForOne: false,
-            amountSpecified: -1 ether,
-            sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
-        });
+        SwapParams memory toxicParams =
+            SwapParams({zeroForOne: false, amountSpecified: -1 ether, sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1});
 
         swapRouter.swap(key, toxicParams, settings, ZERO_BYTES);
         vm.roll(block.number + 1);
         for (uint256 i = 0; i < 5; i++) {
             SwapParams memory continued = SwapParams({
-                zeroForOne: false,
-                amountSpecified: -0.3 ether,
-                sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
+                zeroForOne: false, amountSpecified: -0.3 ether, sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
             });
             swapRouter.swap(key, continued, settings, ZERO_BYTES);
             swapRouter.swap(vanillaKey, continued, settings, ZERO_BYTES);
@@ -1330,18 +1254,13 @@ contract BallastHookTest is Test, Deployers {
     function test_previewFee_whilePaused_ignoresToxicConditionsEntirely() public {
         // Establish clearly toxic conditions first: push price away from
         // oracle significantly.
-        SwapParams memory pushParams = SwapParams({
-            zeroForOne: false,
-            amountSpecified: -3 ether,
-            sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
-        });
+        SwapParams memory pushParams =
+            SwapParams({zeroForOne: false, amountSpecified: -3 ether, sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1});
         swapRouter.swap(key, pushParams, PoolSwapTestSettings(), ZERO_BYTES);
         vm.roll(block.number + 1);
 
         SwapParams memory toxicParams = SwapParams({
-            zeroForOne: false,
-            amountSpecified: -0.5 ether,
-            sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
+            zeroForOne: false, amountSpecified: -0.5 ether, sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
         });
 
         // Confirm this scenario WOULD normally be toxic (sanity check).

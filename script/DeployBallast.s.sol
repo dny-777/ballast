@@ -99,11 +99,7 @@ contract DeployBallast is Script {
         Currency currency1 = Currency.wrap(address(token));
 
         PoolKey memory key = PoolKey({
-            currency0: currency0,
-            currency1: currency1,
-            fee: LPFeeLibrary.DYNAMIC_FEE_FLAG,
-            tickSpacing: 60,
-            hooks: hook
+            currency0: currency0, currency1: currency1, fee: LPFeeLibrary.DYNAMIC_FEE_FLAG, tickSpacing: 60, hooks: hook
         });
 
         // Initialize at an arbitrary starting price; the oracle deviation

@@ -455,11 +455,7 @@ contract BallastHook is BaseHook {
     // beforeInitialize — gate: pool MUST be a dynamic-fee pool
     // ─────────────────────────────────────────────────────────────────────
 
-    function _beforeInitialize(address sender, PoolKey calldata key, uint160)
-        internal
-        override
-        returns (bytes4)
-    {
+    function _beforeInitialize(address sender, PoolKey calldata key, uint160) internal override returns (bytes4) {
         if (!key.fee.isDynamicFee()) revert MustUseDynamicFee();
         poolConfigurer[key.toId()] = sender;
         return this.beforeInitialize.selector;
@@ -477,11 +473,12 @@ contract BallastHook is BaseHook {
     // reserve-and-donate mechanism already proven for toxic swaps.
     // ─────────────────────────────────────────────────────────────────────
 
-    function _beforeAddLiquidity(address sender, PoolKey calldata key, ModifyLiquidityParams calldata params, bytes calldata)
-        internal
-        override
-        returns (bytes4)
-    {
+    function _beforeAddLiquidity(
+        address sender,
+        PoolKey calldata key,
+        ModifyLiquidityParams calldata params,
+        bytes calldata
+    ) internal override returns (bytes4) {
         bytes32 positionKey = _positionKey(key.toId(), sender, params);
         liquidityAddedAtBlock[positionKey] = block.number;
         return this.beforeAddLiquidity.selector;
@@ -548,10 +545,8 @@ contract BallastHook is BaseHook {
         // bounded above by an already-valid int128 value and cannot
         // overflow when cast back.
         // forge-lint: disable-next-line(unsafe-typecast)
-        return (
-            this.afterRemoveLiquidity.selector,
-            toBalanceDelta(int128(uint128(penalty0)), int128(uint128(penalty1)))
-        );
+        return
+            (this.afterRemoveLiquidity.selector, toBalanceDelta(int128(uint128(penalty0)), int128(uint128(penalty1))));
     }
 
     /// @notice Computes the real, decay-based JIT penalty for a given
@@ -634,12 +629,9 @@ contract BallastHook is BaseHook {
     ///        invert it before comparison.
     /// @param staleness Custom max staleness window in seconds for this
     ///        pool's feed. Pass 0 to use `DEFAULT_MAX_ORACLE_STALENESS`.
-    function configurePool(
-        PoolKey calldata key,
-        IAggregatorV3 feed,
-        bool oracleMatchesPoolDirection,
-        uint256 staleness
-    ) external {
+    function configurePool(PoolKey calldata key, IAggregatorV3 feed, bool oracleMatchesPoolDirection, uint256 staleness)
+        external
+    {
         PoolId poolId = key.toId();
         require(msg.sender == poolConfigurer[poolId], "Ballast: not pool configurer");
         require(address(feed) != address(0), "Ballast: feed cannot be zero address");
@@ -1118,10 +1110,7 @@ contract BallastHook is BaseHook {
     /// 2's computed impact (for the baseline EMA) and the combined
     /// toxicity score (for sizing the reserve skim) so `_afterSwap` can
     /// use them without recomputing.
-    function _computeFee(PoolId poolId, PoolKey calldata key, SwapParams calldata params)
-        internal
-        returns (uint24)
-    {
+    function _computeFee(PoolId poolId, PoolKey calldata key, SwapParams calldata params) internal returns (uint24) {
         (uint24 fee, uint256 impactBps, uint256 scoreX18) = _computeFeeAndImpact(poolId, key, params);
         _pendingImpactBps[poolId] = impactBps;
         _pendingScoreX18[poolId] = scoreX18;
@@ -1479,11 +1468,7 @@ contract BallastHook is BaseHook {
     /// it is comparable to a human-scale oracle price. Skipping this
     /// correction was an earlier bug in this contract — flagged and fixed
     /// before Signal 2 was built on top of it, rather than after.
-    function _rawSqrtPriceToDecimalsCorrectedX18(PoolId poolId, uint160 sqrtPriceX96)
-        internal
-        view
-        returns (uint256)
-    {
+    function _rawSqrtPriceToDecimalsCorrectedX18(PoolId poolId, uint160 sqrtPriceX96) internal view returns (uint256) {
         // rawPriceX18 = (sqrtPriceX96 / 2^96)^2, in RAW token-unit terms,
         // scaled to 18-decimal fixed point. Computed without overflow by
         // scaling before squaring: rawPriceX18 = (sqrtPriceX96^2 * 1e18) / 2^192

@@ -55,9 +55,7 @@ contract SwapBallast is Script {
         // true, exact input). Small enough to comfortably fit within the
         // small demo liquidity position deployed earlier.
         SwapParams memory params = SwapParams({
-            zeroForOne: true,
-            amountSpecified: -0.001 ether,
-            sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+            zeroForOne: true, amountSpecified: -0.001 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
         });
 
         // Preview the fee BEFORE swapping — a view call, no gas cost, and

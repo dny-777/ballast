@@ -42,9 +42,8 @@ contract BallastInvariantTest is StdInvariant, Test, Deployers {
 
         uint160 flags = uint160(
             Hooks.BEFORE_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG
-                | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG
-                | Hooks.BEFORE_ADD_LIQUIDITY_FLAG | Hooks.AFTER_REMOVE_LIQUIDITY_FLAG
-                | Hooks.AFTER_REMOVE_LIQUIDITY_RETURNS_DELTA_FLAG
+                | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG | Hooks.BEFORE_ADD_LIQUIDITY_FLAG
+                | Hooks.AFTER_REMOVE_LIQUIDITY_FLAG | Hooks.AFTER_REMOVE_LIQUIDITY_RETURNS_DELTA_FLAG
         );
         address hookAddress = address(flags);
         deployCodeTo("BallastHook.sol:BallastHook", abi.encode(manager), hookAddress);
@@ -96,14 +95,10 @@ contract BallastInvariantTest is StdInvariant, Test, Deployers {
         uint256 actualBalance1 = currency1.balanceOf(address(hook));
 
         assertGe(
-            actualBalance0,
-            hook.pendingReserve0(poolId),
-            "Hook claims more pending reserve0 than it actually holds"
+            actualBalance0, hook.pendingReserve0(poolId), "Hook claims more pending reserve0 than it actually holds"
         );
         assertGe(
-            actualBalance1,
-            hook.pendingReserve1(poolId),
-            "Hook claims more pending reserve1 than it actually holds"
+            actualBalance1, hook.pendingReserve1(poolId), "Hook claims more pending reserve1 than it actually holds"
         );
     }
 
@@ -114,9 +109,7 @@ contract BallastInvariantTest is StdInvariant, Test, Deployers {
     /// individually-randomized single calls.
     function invariant_feeAlwaysWithinBounds() public view {
         SwapParams memory params = SwapParams({
-            zeroForOne: true,
-            amountSpecified: -0.01 ether,
-            sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+            zeroForOne: true, amountSpecified: -0.01 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
         });
 
         uint24 fee = hook.previewFee(key, params);
@@ -132,9 +125,7 @@ contract BallastInvariantTest is StdInvariant, Test, Deployers {
         if (!hook.paused(poolId)) return; // not applicable this run
 
         SwapParams memory params = SwapParams({
-            zeroForOne: true,
-            amountSpecified: -0.01 ether,
-            sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+            zeroForOne: true, amountSpecified: -0.01 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
         });
 
         assertEq(hook.previewFee(key, params), hook.BASE_FEE(), "Paused pool charged a non-base fee");

@@ -100,11 +100,8 @@ contract MultiPoolIsolationTest is Test, Deployers {
     /// change Pool B's fee at all — confirmed with a real preview
     /// before and after, not assumed from code inspection.
     function test_toxicActivityInPoolA_doesNotAffectPoolBFee() public {
-        SwapParams memory previewParams = SwapParams({
-            zeroForOne: true,
-            amountSpecified: -0.5 ether,
-            sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
-        });
+        SwapParams memory previewParams =
+            SwapParams({zeroForOne: true, amountSpecified: -0.5 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1});
 
         uint24 poolBFeeBefore = hook.previewFee(keyB, previewParams);
 
@@ -150,9 +147,7 @@ contract MultiPoolIsolationTest is Test, Deployers {
             swapRouter.swap(
                 keyA,
                 SwapParams({
-                    zeroForOne: true,
-                    amountSpecified: -2 ether,
-                    sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+                    zeroForOne: true, amountSpecified: -2 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
                 }),
                 _settings(),
                 ZERO_BYTES
@@ -163,11 +158,8 @@ contract MultiPoolIsolationTest is Test, Deployers {
         // Pool B has never seen any swaps at all — its baseline should
         // still be completely unset, and a modest swap there should NOT
         // be judged against Pool A's now-large baseline.
-        SwapParams memory modestSwap = SwapParams({
-            zeroForOne: true,
-            amountSpecified: -0.1 ether,
-            sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
-        });
+        SwapParams memory modestSwap =
+            SwapParams({zeroForOne: true, amountSpecified: -0.1 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1});
         uint24 poolBFee = hook.previewFee(keyB, modestSwap);
 
         assertEq(
@@ -192,11 +184,8 @@ contract MultiPoolIsolationTest is Test, Deployers {
         // Confirm Pool B still charges its normal, real, dynamic fee —
         // not silently frozen at base fee the way a paused pool would be.
         oracleB.setAnswer(int256(1.5 * 10 ** 8));
-        SwapParams memory params = SwapParams({
-            zeroForOne: true,
-            amountSpecified: -0.5 ether,
-            sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
-        });
+        SwapParams memory params =
+            SwapParams({zeroForOne: true, amountSpecified: -0.5 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1});
         uint24 poolBFee = hook.previewFee(keyB, params);
         assertGt(poolBFee, hook.BASE_FEE(), "Pool B should still respond normally to its own toxic conditions");
     }

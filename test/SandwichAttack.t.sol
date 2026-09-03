@@ -62,9 +62,8 @@ contract SandwichAttackTest is Test, Deployers {
 
         uint160 flags = uint160(
             Hooks.BEFORE_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG
-                | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG
-                | Hooks.BEFORE_ADD_LIQUIDITY_FLAG | Hooks.AFTER_REMOVE_LIQUIDITY_FLAG
-                | Hooks.AFTER_REMOVE_LIQUIDITY_RETURNS_DELTA_FLAG
+                | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG | Hooks.BEFORE_ADD_LIQUIDITY_FLAG
+                | Hooks.AFTER_REMOVE_LIQUIDITY_FLAG | Hooks.AFTER_REMOVE_LIQUIDITY_RETURNS_DELTA_FLAG
         );
         address hookAddress = address(flags);
         deployCodeTo("BallastHook.sol:BallastHook", abi.encode(manager), hookAddress);
@@ -150,15 +149,9 @@ contract SandwichAttackTest is Test, Deployers {
         console.log("=== RESULT: FRESH POOL ===");
         console.log("Attacker profit, vanilla pool: ", vanillaProfit);
         console.log("Attacker profit, Ballast pool (fresh, same-block from pool launch): ", ballastProfitFresh);
-        console.log(
-            "HONEST FINDING: a same-block, top-of-block-snapshot defense (designed to stop"
-        );
-        console.log(
-            "an attacker inflating the baseline mid-block) has the side effect of also"
-        );
-        console.log(
-            "flattening Signal 1/2's reaction WITHIN a pool's very first block of activity,"
-        );
+        console.log("HONEST FINDING: a same-block, top-of-block-snapshot defense (designed to stop");
+        console.log("an attacker inflating the baseline mid-block) has the side effect of also");
+        console.log("flattening Signal 1/2's reaction WITHIN a pool's very first block of activity,");
         console.log("since every leg compares against the same frozen starting snapshot.");
     }
 
@@ -213,7 +206,9 @@ contract SandwichAttackTest is Test, Deployers {
         // here directly.
         assertEq(ballastC0.balanceOf(address(hook)), 0, "Hook must not retain any skimmed funds - must flow to LPs");
         assertEq(ballastC1.balanceOf(address(hook)), 0, "Hook must not retain any skimmed funds - must flow to LPs");
-        console.log("Confirmed: hook holds zero residual balance - all skimmed value was released to LPs, not retained.");
+        console.log(
+            "Confirmed: hook holds zero residual balance - all skimmed value was released to LPs, not retained."
+        );
     }
 
     function _runSandwich(

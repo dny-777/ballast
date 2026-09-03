@@ -60,26 +60,28 @@ contract LiveJitDemo is Script {
             PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false});
         PoolSwapTest(SWAP_ROUTER).swap{value: 0.006 ether}(
             key,
-            SwapParams({zeroForOne: true, amountSpecified: -0.005 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1}),
+            SwapParams({
+                zeroForOne: true, amountSpecified: -0.005 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+            }),
             settings,
             ""
         );
         console.log("Step 2: swap executed.");
 
         // Step 3: remove the SAME position immediately after.
-        PoolModifyLiquidityTest(LIQUIDITY_ROUTER).modifyLiquidity(
-            key,
-            ModifyLiquidityParams({
+        PoolModifyLiquidityTest(LIQUIDITY_ROUTER)
+            .modifyLiquidity(
+                key,
+                ModifyLiquidityParams({
                 tickLower: TickMath.minUsableTick(60),
                 tickUpper: TickMath.maxUsableTick(60),
                 liquidityDelta: -0.02 ether,
                 salt: bytes32(uint256(2))
             }),
-            ""
-        );
+                ""
+            );
         console.log("Step 3: liquidity removed. Check BallastHook events for JitPenaltyApplied.");
 
         vm.stopBroadcast();
     }
-
 }

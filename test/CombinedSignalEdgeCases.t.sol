@@ -73,9 +73,7 @@ contract CombinedSignalEdgeCasesTest is Test, Deployers {
             swapRouter.swap(
                 key,
                 SwapParams({
-                    zeroForOne: true,
-                    amountSpecified: -0.05 ether,
-                    sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+                    zeroForOne: true, amountSpecified: -0.05 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
                 }),
                 _settings(),
                 ZERO_BYTES
@@ -90,11 +88,8 @@ contract CombinedSignalEdgeCasesTest is Test, Deployers {
 
         // But make this specific corrective swap disproportionately
         // large relative to the established 0.05 ether baseline.
-        SwapParams memory correctiveButHugeParams = SwapParams({
-            zeroForOne: true,
-            amountSpecified: -10 ether,
-            sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
-        });
+        SwapParams memory correctiveButHugeParams =
+            SwapParams({zeroForOne: true, amountSpecified: -10 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1});
 
         uint24 fee = hook.previewFee(key, correctiveButHugeParams);
 
@@ -117,9 +112,7 @@ contract CombinedSignalEdgeCasesTest is Test, Deployers {
         oracle.setAnswer(int256(0.7 * 10 ** 8));
 
         SwapParams memory modestCorrectiveParams = SwapParams({
-            zeroForOne: true,
-            amountSpecified: -0.01 ether,
-            sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+            zeroForOne: true, amountSpecified: -0.01 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
         });
 
         uint24 fee = hook.previewFee(key, modestCorrectiveParams);

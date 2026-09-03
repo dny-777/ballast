@@ -84,9 +84,7 @@ contract BallastHookForkTest is Test {
     /// constructed test pool.
     function test_fork_previewFee_worksAgainstRealLiveState() public view {
         SwapParams memory params = SwapParams({
-            zeroForOne: true,
-            amountSpecified: -0.001 ether,
-            sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+            zeroForOne: true, amountSpecified: -0.001 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
         });
 
         uint24 fee = hook.previewFee(key, params);

@@ -75,10 +75,7 @@ contract BallastInvariantHandler is Test {
         });
 
         try swapRouter.swap(
-            key,
-            params,
-            PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false}),
-            new bytes(0)
+            key, params, PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false}), new bytes(0)
         ) {
             successfulSwapCount++;
         } catch {

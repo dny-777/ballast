@@ -106,9 +106,7 @@ contract PriorArtComparisonTest is Test, Deployers {
         console.log("Ballast fee, corrective direction:", ballastCorrectiveFee);
         console.log("Volatility-only fee (identical for both directions):", volatilityOnlyFeeForBothDirections);
 
-        assertGt(
-            ballastToxicFee, ballastCorrectiveFee, "Ballast must charge meaningfully more for the toxic direction"
-        );
+        assertGt(ballastToxicFee, ballastCorrectiveFee, "Ballast must charge meaningfully more for the toxic direction");
         assertLt(
             ballastCorrectiveFee,
             hook.BASE_FEE(),
@@ -143,9 +141,7 @@ contract PriorArtComparisonTest is Test, Deployers {
             swapRouter.swap(
                 key,
                 SwapParams({
-                    zeroForOne: true,
-                    amountSpecified: -0.05 ether,
-                    sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+                    zeroForOne: true, amountSpecified: -0.05 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
                 }),
                 settings,
                 ZERO_BYTES

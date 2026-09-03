@@ -47,18 +47,16 @@ contract ReentrancyTest is Test, Deployers {
         // Order currencies correctly (Uniswap requires currency0 <
         // currency1 by address).
         Currency maliciousCurrency = Currency.wrap(address(maliciousToken));
-        (Currency lower, Currency higher) = address(maliciousToken) < Currency.unwrap(c1)
-            ? (maliciousCurrency, c1)
-            : (c1, maliciousCurrency);
+        (Currency lower, Currency higher) =
+            address(maliciousToken) < Currency.unwrap(c1) ? (maliciousCurrency, c1) : (c1, maliciousCurrency);
 
         maliciousToken.approve(address(swapRouter), type(uint256).max);
         maliciousToken.approve(address(modifyLiquidityRouter), type(uint256).max);
 
         uint160 flags = uint160(
             Hooks.BEFORE_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG
-                | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG
-                | Hooks.BEFORE_ADD_LIQUIDITY_FLAG | Hooks.AFTER_REMOVE_LIQUIDITY_FLAG
-                | Hooks.AFTER_REMOVE_LIQUIDITY_RETURNS_DELTA_FLAG
+                | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG | Hooks.BEFORE_ADD_LIQUIDITY_FLAG
+                | Hooks.AFTER_REMOVE_LIQUIDITY_FLAG | Hooks.AFTER_REMOVE_LIQUIDITY_RETURNS_DELTA_FLAG
         );
         address hookAddress = address(flags);
         deployCodeTo("BallastHook.sol:BallastHook", abi.encode(manager), hookAddress);
@@ -99,9 +97,7 @@ contract ReentrancyTest is Test, Deployers {
             swapRouter.swap(
                 maliciousKey,
                 SwapParams({
-                    zeroForOne: true,
-                    amountSpecified: -0.1 ether,
-                    sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+                    zeroForOne: true, amountSpecified: -0.1 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
                 }),
                 settings,
                 ZERO_BYTES
@@ -117,9 +113,7 @@ contract ReentrancyTest is Test, Deployers {
             (
                 maliciousKey,
                 SwapParams({
-                    zeroForOne: true,
-                    amountSpecified: -0.01 ether,
-                    sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+                    zeroForOne: true, amountSpecified: -0.01 ether, sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
                 }),
                 settings,
                 ZERO_BYTES
@@ -133,11 +127,7 @@ contract ReentrancyTest is Test, Deployers {
         // the malicious token TO the hook, triggering its callback.
         swapRouter.swap(
             maliciousKey,
-            SwapParams({
-                zeroForOne: false,
-                amountSpecified: -5 ether,
-                sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
-            }),
+            SwapParams({zeroForOne: false, amountSpecified: -5 ether, sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1}),
             settings,
             ZERO_BYTES
         );

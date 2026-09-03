@@ -42,9 +42,8 @@ contract JitAttackTest is Test, Deployers {
 
         uint160 flags = uint160(
             Hooks.BEFORE_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG
-                | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG
-                | Hooks.BEFORE_ADD_LIQUIDITY_FLAG | Hooks.AFTER_REMOVE_LIQUIDITY_FLAG
-                | Hooks.AFTER_REMOVE_LIQUIDITY_RETURNS_DELTA_FLAG
+                | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG | Hooks.BEFORE_ADD_LIQUIDITY_FLAG
+                | Hooks.AFTER_REMOVE_LIQUIDITY_FLAG | Hooks.AFTER_REMOVE_LIQUIDITY_RETURNS_DELTA_FLAG
         );
         address hookAddress = address(flags);
         deployCodeTo("BallastHook.sol:BallastHook", abi.encode(manager), hookAddress);
@@ -255,8 +254,16 @@ contract JitAttackTest is Test, Deployers {
         // would have captured ~0.024 (80%). At 5/10 blocks held, we
         // expect roughly 40% instead — meaningfully less than the
         // same-block case, and meaningfully more than zero.
-        assertLt(loggedPenalty0, 20_000_000_000_000_000, "Partial decay must be meaningfully less than the same-block (80%) penalty");
-        assertGt(loggedPenalty0, 5_000_000_000_000_000, "Partial decay must still be a real, meaningfully nonzero penalty, not near-zero");
+        assertLt(
+            loggedPenalty0,
+            20_000_000_000_000_000,
+            "Partial decay must be meaningfully less than the same-block (80%) penalty"
+        );
+        assertGt(
+            loggedPenalty0,
+            5_000_000_000_000_000,
+            "Partial decay must still be a real, meaningfully nonzero penalty, not near-zero"
+        );
     }
 
     /// @notice Verifies a real, precise, and reassuring finding: topping
